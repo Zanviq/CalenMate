@@ -352,4 +352,31 @@ router.get('/history', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// DELETE /history - Clear chat history for a context
+router.delete('/history', async (req: AuthRequest, res: Response) => {
+  try {
+    const { context } = req.query;
+
+    let query = supabaseAdmin
+      .from('chat_messages')
+      .delete()
+      .eq('user_id', req.userId);
+
+    if (context) {
+      query = query.eq('context', context as string);
+    }
+
+    const { error } = await query;
+
+    if (error) {
+      res.status(500).json({ error: 'Failed to clear chat history' });
+      return;
+    }
+
+    res.json({ message: 'Chat history cleared' });
+  } catch {
+    res.status(500).json({ error: 'Failed to clear chat history' });
+  }
+});
+
 export default router;
