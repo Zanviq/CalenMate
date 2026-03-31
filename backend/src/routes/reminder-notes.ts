@@ -1,0 +1,91 @@
+import { Router, Response } from 'express';
+import { AuthRequest } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
+import { supabaseAdmin } from '../services/supabase';
+
+const router = Router();
+
+router.use(authMiddleware);
+
+// GET /:id/notes - Get notes for a reminder
+router.get('/:id/notes', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Verify reminder ownership
+    const { data: reminder, error: reminderError } = await supabaseAdmin
+      .from('reminders')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', req.userId)
+      .single();
+
+    if (reminderError || !reminder) {
+      res.status(404).json({ error: 'Reminder not found' });
+      return;
+    }
+
+    const { data: notes, error } = await supabaseAdmin
+      .from('reminder_notes')
+      .select('*')
+      .eq('reminder_id', id)
+      .eq('user_id', req.userId);
+
+    if (error) {
+      res.status(500).json({ error: 'Failed to fetch notes' });
+      return;
+    }
+
+    res.json(notes);
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch notes' });
+  }
+});
+
+// POST /:id/notes - Create or update note (upsert)
+router.post('/:id/notes', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+
+    // Verify reminder ownership
+    const { data: reminder, error: reminderError } = await supabaseAdmin
+      .from('reminders')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', req.userId)
+      .single();
+
+    if (reminderError || !reminder) {
+      res.status(404).json({ error: 'Reminder not found' });
+      return;
+    }
+
+    const { data: note, error } = await supabaseAdmin
+      .from('reminder_notes')
+      .upsert(
+        {
+          reminder_id: id,
+          user_id: req.userId,
+          content,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: 'reminder_id,user_id',
+        }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: 'Failed to save note' });
+      return;
+    }
+
+    res.json(note);
+  } catch {
+    res.status(500).json({ error: 'Failed to save note' });
+  }
+});
+
+export default router;
