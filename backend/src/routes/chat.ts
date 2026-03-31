@@ -211,21 +211,39 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     // Fetch existing events and reminders for context
     let existingEvents: Record<string, unknown>[] = [];
     let existingReminders: Record<string, unknown>[] = [];
+    let calendarError: string | null = null;
 
     try {
       const { calendar } = await getCalendarClient(req.userId!);
       const now = new Date();
-      const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const monthLater = new Date(startOfToday.getTime() + 30 * 24 * 60 * 60 * 1000);
       const eventsResponse = await calendar.events.list({
         calendarId: 'primary',
-        timeMin: now.toISOString(),
-        timeMax: weekLater.toISOString(),
+        timeMin: startOfToday.toISOString(),
+        timeMax: monthLater.toISOString(),
         singleEvents: true,
         orderBy: 'startTime',
+        maxResults: 50,
       });
-      existingEvents = (eventsResponse.data.items || []) as Record<string, unknown>[];
-    } catch {
-      // Calendar may not be connected
+      // Simplify Google Calendar events for Gemini
+      existingEvents = (eventsResponse.data.items || []).map((item) => {
+        const start = item.start as { dateTime?: string; date?: string } | undefined;
+        const end = item.end as { dateTime?: string; date?: string } | undefined;
+        return {
+          id: item.id,
+          title: item.summary || '(제목 없음)',
+          date: start?.dateTime?.slice(0, 10) || start?.date || '',
+          start_time: start?.dateTime?.slice(11, 16) || '',
+          end_time: end?.dateTime?.slice(11, 16) || '',
+          allDay: !start?.dateTime,
+          colorId: item.colorId || '',
+          description: item.description || '',
+        };
+      });
+    } catch (err) {
+      calendarError = err instanceof Error ? err.message : 'Google Calendar 연결 실패';
+      console.error('Calendar fetch error:', calendarError);
     }
 
     const { data: reminders } = await supabaseAdmin
@@ -233,7 +251,13 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       .select('*')
       .eq('user_id', req.userId)
       .eq('is_completed', false);
-    existingReminders = (reminders || []) as Record<string, unknown>[];
+    existingReminders = (reminders || []).map((r) => ({
+      id: (r as Record<string, unknown>).id,
+      title: (r as Record<string, unknown>).title,
+      priority: (r as Record<string, unknown>).priority,
+      due_date: (r as Record<string, unknown>).due_date,
+      is_completed: (r as Record<string, unknown>).is_completed,
+    }));
 
     // Parse message with Gemini
     const aiResponse = await parseUserMessage({
@@ -243,6 +267,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       existingReminders,
       chatHistory,
       userInstructions,
+      calendarError,
     });
 
     // Execute actions

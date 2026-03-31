@@ -10,10 +10,11 @@ interface ParseOptions {
   existingReminders?: Record<string, unknown>[];
   chatHistory?: { role: string; content: string }[];
   userInstructions?: { id: string; content: string }[];
+  calendarError?: string | null;
 }
 
 export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> {
-  const { content, context, existingEvents, existingReminders, chatHistory, userInstructions } = opts;
+  const { content, context, existingEvents, existingReminders, chatHistory, userInstructions, calendarError } = opts;
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
     generationConfig: {
@@ -26,15 +27,26 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
     : '';
 
   const historyBlock = chatHistory && chatHistory.length > 0
-    ? `\n== 최근 대화 기록 ==\n${chatHistory.map((m) => `${m.role === 'user' ? '사용자' : 'AI'}: ${m.content}`).join('\n')}\n`
+    ? `\n== 최근 대화 기록 (참고용, 이미 처리 완료된 과거 대화) ==\n${chatHistory.map((m) => `${m.role === 'user' ? '사용자' : 'AI'}: ${m.content}`).join('\n')}\n`
     : '';
 
-  const systemPrompt = `You are CalenMate AI assistant. Parse user messages and extract actions.
+  let eventsBlock: string;
+  if (calendarError) {
+    eventsBlock = `\n== 현재 등록된 일정 ==\n캘린더 조회 실패: ${calendarError}\n사용자에게 이 오류를 알려줘라.\n`;
+  } else if (existingEvents && existingEvents.length > 0) {
+    eventsBlock = `\n== 현재 등록된 일정 (향후 30일, Google Calendar에서 실시간 조회) ==\n${JSON.stringify(existingEvents, null, 2)}\n`;
+  } else {
+    eventsBlock = '\n== 현재 등록된 일정 ==\n등록된 일정 없음\n';
+  }
+
+  const remindersBlock = existingReminders && existingReminders.length > 0
+    ? `\n== 현재 리마인더 ==\n${JSON.stringify(existingReminders, null, 2)}\n`
+    : '\n== 현재 리마인더 ==\n없음\n';
+
+  const systemPrompt = `You are CalenMate AI assistant. You help users manage their calendar and reminders.
 Current date: ${new Date().toISOString()}
 Context: ${context}
-${instructionsBlock}${historyBlock}
-${existingEvents ? `Existing events: ${JSON.stringify(existingEvents)}` : ''}
-${existingReminders ? `Existing reminders: ${JSON.stringify(existingReminders)}` : ''}
+${instructionsBlock}${historyBlock}${eventsBlock}${remindersBlock}
 
 Respond ONLY with valid JSON:
 {
@@ -42,10 +54,17 @@ Respond ONLY with valid JSON:
   "response": "Korean response to user"
 }
 
-## Action types
+## Your capabilities
 
-### Calendar events
-- create_event, update_event, delete_event
+### 1. 일정/리마인더 조회 및 질문 답변
+- 사용자가 일정이나 리마인더에 대해 물어보면 위에 제공된 데이터를 사용하여 답변하라.
+- "오늘 일정 알려줘", "이번 주 뭐 있어?", "내일 일정 있어?" 등의 질문에 답변하라.
+- 일정이 없으면 "등록된 일정이 없습니다"라고 답변하라.
+- 조회만 하는 경우 actions는 빈 배열 []로 두고 response에 정보를 담아라.
+
+### 2. 일정 관리 (actions)
+
+#### Calendar events: create_event, update_event, delete_event
 - For create_event, REQUIRED fields: title, date (YYYY-MM-DD), start_time (HH:mm), end_time (HH:mm)
 - If the user does NOT provide a title (이름) or time (시간), do NOT create the event. Instead return empty actions and ask the user for the missing information in the response.
 - If only start_time is given without end_time, default end_time to 1 hour after start_time.
@@ -55,26 +74,27 @@ Respond ONLY with valid JSON:
   - Map Korean color names: 빨간색→tomato, 주황색→tangerine, 노란색→banana, 초록색→sage, 파란색→peacock, 보라색→grape, 회색→graphite, 분홍색→flamingo
 - For update/delete: data needs id of the target item
 
-### Reminders
-- create_reminder, update_reminder, delete_reminder, complete_reminder
+#### Reminders: create_reminder, update_reminder, delete_reminder, complete_reminder
 - Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false)
 - For update/delete/complete: data needs id
 
-### Instructions (주요 지시사항)
+#### Instructions (주요 지시사항): save_instruction, delete_instruction
 - save_instruction: when user explicitly asks to save a rule/instruction for future use (e.g. "이걸 주요 지시사항에 저장해줘")
   - data: { "content": "the instruction text" }
 - delete_instruction: when user asks to remove an instruction
   - data: { "id": "instruction_id" }
 
 ## CRITICAL RULES
-1. 주요 지시사항이 있으면 모든 작업에 우선 적용하라. 예: 지시사항에 "동아리 일정은 보라색"이 있으면 동아리 관련 일정 생성 시 자동으로 color를 "grape"로 설정.
-2. 사용자가 일정 제목(이름) 또는 시간을 제공하지 않으면 반드시 물어봐라. 절대 추측하지 마라.
-3. 복합 명령을 지원하라 (여러 액션 동시 가능).
-4. Always respond in Korean.`;
+1. **현재 메시지만 처리하라.** 대화 기록은 맥락 파악용일 뿐이다. 과거에 이미 처리된 요청을 절대 다시 실행하지 마라. 오직 아래 "현재 사용자 메시지"에 대해서만 actions를 생성하라.
+2. 주요 지시사항이 있으면 모든 작업에 우선 적용하라.
+3. 사용자가 일정 제목(이름) 또는 시간을 제공하지 않으면 반드시 물어봐라. 절대 추측하지 마라.
+4. 복합 명령을 지원하라 (여러 액션 동시 가능).
+5. 사용자가 일정/리마인더 조회를 요청하면 "현재 등록된 일정" 데이터를 기반으로 답변하라. 이 데이터는 Google Calendar에서 실시간으로 가져온 것이다.
+6. Always respond in Korean.`;
 
   const result = await model.generateContent([
     { text: systemPrompt },
-    { text: content },
+    { text: `== 현재 사용자 메시지 (이것만 처리하라) ==\n${content}` },
   ]);
 
   const responseText = result.response.text();

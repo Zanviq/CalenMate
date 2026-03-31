@@ -7,6 +7,28 @@ const router = Router();
 
 router.use(authMiddleware);
 
+interface GoogleCalendarEvent {
+  id?: string | null;
+  summary?: string | null;
+  description?: string | null;
+  colorId?: string | null;
+  start?: { dateTime?: string | null; date?: string | null } | null;
+  end?: { dateTime?: string | null; date?: string | null } | null;
+}
+
+function toCalendarEvent(item: GoogleCalendarEvent) {
+  const allDay = !item.start?.dateTime;
+  return {
+    id: item.id ?? '',
+    title: item.summary ?? '(제목 없음)',
+    description: item.description ?? undefined,
+    start: item.start?.dateTime ?? item.start?.date ?? '',
+    end: item.end?.dateTime ?? item.end?.date ?? '',
+    color: item.colorId ?? undefined,
+    allDay,
+  };
+}
+
 // GET /events - List events
 router.get('/events', async (req: AuthRequest, res: Response) => {
   try {
@@ -22,7 +44,8 @@ router.get('/events', async (req: AuthRequest, res: Response) => {
       orderBy: 'startTime',
     });
 
-    res.json(response.data.items || []);
+    const events = (response.data.items || []).map(toCalendarEvent);
+    res.json(events);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch events';
     res.status(500).json({ error: message });
@@ -53,7 +76,7 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
       },
     });
 
-    res.status(201).json(event.data);
+    res.status(201).json(toCalendarEvent(event.data));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to create event';
     res.status(500).json({ error: message });
@@ -90,7 +113,7 @@ router.put('/events/:id', async (req: AuthRequest, res: Response) => {
       },
     });
 
-    res.json(response.data);
+    res.json(toCalendarEvent(response.data));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update event';
     res.status(500).json({ error: message });
