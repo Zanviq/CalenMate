@@ -1,0 +1,235 @@
+import { create } from 'zustand';
+import api from '@/lib/api';
+import type { ChatMessage, AIAction } from '@/types';
+
+type ChatContext = 'home' | 'calendar' | 'reminder';
+
+interface ActionResult {
+  type: string;
+  data: Record<string, unknown>;
+}
+
+interface SendMessageResult {
+  actions: AIAction[];
+  results: ActionResult[];
+  response: string;
+}
+
+interface HistoryResponse {
+  messages: ChatMessage[];
+  hasMore: boolean;
+  total: number | null;
+}
+
+interface ChatState {
+  /** Messages keyed by context — preserves history when switching */
+  messagesByContext: Record<ChatContext, ChatMessage[]>;
+  /** Whether older messages exist per context */
+  hasMoreByContext: Record<ChatContext, boolean>;
+  /** Loading state for pagination (loading older messages) */
+  isLoadingMore: boolean;
+  context: ChatContext;
+  isLoading: boolean;
+  error: string | null;
+  calendarActionCount: number;
+  instructionActionCount: number;
+  setContext: (context: ChatContext) => void;
+  addMessage: (message: ChatMessage) => void;
+  setMessages: (messages: ChatMessage[]) => void;
+  setLoading: (loading: boolean) => void;
+  clearMessages: () => void;
+  sendMessage: (content: string) => Promise<SendMessageResult | null>;
+  loadHistory: () => Promise<void>;
+  loadOlderMessages: () => Promise<void>;
+}
+
+const HISTORY_PAGE_SIZE = 50;
+
+export const useChatStore = create<ChatState>((set, get) => ({
+  messagesByContext: { home: [], calendar: [], reminder: [] },
+  hasMoreByContext: { home: false, calendar: false, reminder: false },
+  isLoadingMore: false,
+  context: 'home',
+  isLoading: false,
+  error: null,
+  calendarActionCount: 0,
+  instructionActionCount: 0,
+
+  setContext: (context) => {
+    const prev = get().context;
+    if (prev === context) return;
+    set({ context });
+    // Load history only if the target context has no messages yet
+    if (get().messagesByContext[context].length === 0) {
+      get().loadHistory();
+    }
+  },
+
+  addMessage: (message) =>
+    set((state) => {
+      const ctx = state.context;
+      return {
+        messagesByContext: {
+          ...state.messagesByContext,
+          [ctx]: [...state.messagesByContext[ctx], message],
+        },
+      };
+    }),
+
+  setMessages: (messages) =>
+    set((state) => ({
+      messagesByContext: {
+        ...state.messagesByContext,
+        [state.context]: messages,
+      },
+    })),
+
+  setLoading: (isLoading) => set({ isLoading }),
+
+  clearMessages: () =>
+    set((state) => ({
+      messagesByContext: {
+        ...state.messagesByContext,
+        [state.context]: [],
+      },
+      hasMoreByContext: {
+        ...state.hasMoreByContext,
+        [state.context]: false,
+      },
+    })),
+
+  sendMessage: async (content: string) => {
+    const { context } = get();
+
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      user_id: '',
+      role: 'user',
+      content,
+      context,
+      metadata: {},
+      created_at: new Date().toISOString(),
+    };
+
+    set((state) => ({
+      messagesByContext: {
+        ...state.messagesByContext,
+        [context]: [...state.messagesByContext[context], userMessage],
+      },
+      isLoading: true,
+      error: null,
+    }));
+
+    try {
+      const { data } = await api.post<{
+        actions: AIAction[];
+        response: string;
+        results: { type: string; data: Record<string, unknown> }[];
+        message: ChatMessage;
+      }>('/api/chat', { content, context });
+
+      const assistantMsg: ChatMessage = data.message ?? {
+        id: crypto.randomUUID(),
+        user_id: '',
+        role: 'assistant',
+        content: data.response,
+        context,
+        metadata: {},
+        created_at: new Date().toISOString(),
+      };
+
+      const hasCalendarAction = data.actions.some((a: AIAction) =>
+        a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+      );
+      const hasInstructionAction = data.actions.some((a: AIAction) =>
+        a.type === 'save_instruction' || a.type === 'delete_instruction'
+      );
+
+      set((state) => ({
+        messagesByContext: {
+          ...state.messagesByContext,
+          [context]: [...state.messagesByContext[context], assistantMsg],
+        },
+        isLoading: false,
+        ...(hasCalendarAction && { calendarActionCount: state.calendarActionCount + 1 }),
+        ...(hasInstructionAction && { instructionActionCount: state.instructionActionCount + 1 }),
+      }));
+
+      return { actions: data.actions, results: data.results || [], response: data.response };
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string }, status?: number }, message?: string };
+      const errorMessage = axiosErr.response?.data?.error
+        || axiosErr.message
+        || 'Failed to send message';
+      console.error('Chat error:', axiosErr.response?.status, axiosErr.response?.data);
+      set({ isLoading: false, error: errorMessage });
+      return null;
+    }
+  },
+
+  loadHistory: async () => {
+    const requestContext = get().context;
+
+    try {
+      const { data } = await api.get<HistoryResponse>('/api/chat/history', {
+        params: { context: requestContext, limit: HISTORY_PAGE_SIZE },
+      });
+      if (get().context === requestContext) {
+        set((state) => ({
+          messagesByContext: {
+            ...state.messagesByContext,
+            [requestContext]: data.messages,
+          },
+          hasMoreByContext: {
+            ...state.hasMoreByContext,
+            [requestContext]: data.hasMore,
+          },
+        }));
+      }
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to load chat history';
+      set({ error: errorMessage });
+    }
+  },
+
+  loadOlderMessages: async () => {
+    const requestContext = get().context;
+    const currentMessages = get().messagesByContext[requestContext];
+
+    if (!get().hasMoreByContext[requestContext] || get().isLoadingMore || currentMessages.length === 0) {
+      return;
+    }
+
+    set({ isLoadingMore: true });
+
+    try {
+      const oldestMessage = currentMessages[0];
+      const { data } = await api.get<HistoryResponse>('/api/chat/history', {
+        params: {
+          context: requestContext,
+          limit: HISTORY_PAGE_SIZE,
+          before: oldestMessage.created_at,
+        },
+      });
+
+      if (get().context === requestContext) {
+        set((state) => ({
+          messagesByContext: {
+            ...state.messagesByContext,
+            [requestContext]: [...data.messages, ...state.messagesByContext[requestContext]],
+          },
+          hasMoreByContext: {
+            ...state.hasMoreByContext,
+            [requestContext]: data.hasMore,
+          },
+          isLoadingMore: false,
+        }));
+      } else {
+        set({ isLoadingMore: false });
+      }
+    } catch {
+      set({ isLoadingMore: false });
+    }
+  },
+}));

@@ -1,11 +1,17 @@
 import { Router, Response } from 'express';
+import { z } from 'zod';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
+import { validateBody } from '../middleware/validate';
 import { supabaseAdmin } from '../services/supabase';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+const instructionSchema = z.object({
+  content: z.string().min(1, '내용은 필수입니다').max(2000),
+});
 
 // GET / - List all instructions
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -25,14 +31,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // POST / - Create instruction
-router.post('/', async (req: AuthRequest, res: Response) => {
+router.post('/', validateBody(instructionSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { content } = req.body;
-
-    if (!content) {
-      res.status(400).json({ error: 'Content is required' });
-      return;
-    }
 
     const { data, error } = await supabaseAdmin
       .from('user_instructions')
@@ -49,7 +50,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 });
 
 // PUT /:id - Update instruction
-router.put('/:id', async (req: AuthRequest, res: Response) => {
+router.put('/:id', validateBody(instructionSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { content } = req.body;
 
