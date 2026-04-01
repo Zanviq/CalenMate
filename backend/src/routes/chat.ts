@@ -106,8 +106,14 @@ async function executeAction(
     case 'delete_event': {
       const { id } = action.data as Record<string, string>;
       const calendar = await getCalendar();
+      // Fetch event details before deleting so we can show what was deleted
+      let eventData: Record<string, unknown> = { id };
+      try {
+        const existing = await calendar.events.get({ calendarId: 'primary', eventId: id });
+        eventData = { ...existing.data, _deleted: true };
+      } catch { /* proceed with delete even if fetch fails */ }
       await calendar.events.delete({ calendarId: 'primary', eventId: id });
-      return { type: 'event_deleted', data: { id } };
+      return { type: 'event_deleted', data: eventData };
     }
 
     case 'create_reminder': {
@@ -143,12 +149,23 @@ async function executeAction(
 
     case 'delete_reminder': {
       const { id } = action.data as Record<string, string>;
+      // Fetch reminder details before deleting
+      let reminderData: Record<string, unknown> = { id };
+      const { data: existing } = await supabaseAdmin
+        .from('reminders')
+        .select('*')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .single();
+      if (existing) {
+        reminderData = { ...existing, _deleted: true };
+      }
       await supabaseAdmin
         .from('reminders')
         .delete()
         .eq('id', id)
         .eq('user_id', userId);
-      return { type: 'reminder_deleted', data: { id } };
+      return { type: 'reminder_deleted', data: reminderData };
     }
 
     case 'complete_reminder': {

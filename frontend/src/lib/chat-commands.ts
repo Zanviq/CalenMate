@@ -29,7 +29,7 @@ function systemMessage(content: string, context: string): ChatMessage {
   };
 }
 
-const commands: CommandDefinition[] = [
+export const commands: CommandDefinition[] = [
   {
     name: 'help',
     description: '사용 가능한 명령어 목록',
