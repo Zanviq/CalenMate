@@ -32,6 +32,7 @@ interface ChatState {
   isLoading: boolean;
   error: string | null;
   calendarActionCount: number;
+  reminderActionCount: number;
   instructionActionCount: number;
   setContext: (context: ChatContext) => void;
   addMessage: (message: ChatMessage) => void;
@@ -53,6 +54,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   error: null,
   calendarActionCount: 0,
+  reminderActionCount: 0,
   instructionActionCount: 0,
 
   setContext: (context) => {
@@ -141,6 +143,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const hasCalendarAction = data.actions.some((a: AIAction) =>
         a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
       );
+      const hasReminderAction = data.actions.some((a: AIAction) =>
+        a.type === 'create_reminder' || a.type === 'update_reminder' || a.type === 'delete_reminder' || a.type === 'complete_reminder'
+      );
       const hasInstructionAction = data.actions.some((a: AIAction) =>
         a.type === 'save_instruction' || a.type === 'delete_instruction'
       );
@@ -152,6 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         isLoading: false,
         ...(hasCalendarAction && { calendarActionCount: state.calendarActionCount + 1 }),
+        ...(hasReminderAction && { reminderActionCount: state.reminderActionCount + 1 }),
         ...(hasInstructionAction && { instructionActionCount: state.instructionActionCount + 1 }),
       }));
 

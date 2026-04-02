@@ -7,12 +7,12 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
-import { ArrowLeft, Save, Loader2 } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, List } from 'lucide-react';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { CalendarIcon } from 'lucide-react';
 import api from '@/lib/api';
-import type { Reminder, ReminderNote } from '@/types';
+import type { Reminder, ReminderNote, TaskList } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -66,6 +66,15 @@ export default function ReminderDetailPage() {
   useEffect(() => {
     setContext('reminder');
   }, [setContext]);
+
+  // Fetch task lists for display
+  const { data: taskLists = [] } = useQuery<TaskList[]>({
+    queryKey: ['task-lists'],
+    queryFn: async () => {
+      const res = await api.get('/api/task-lists');
+      return res.data;
+    },
+  });
 
   // Fetch reminder
   const { data: reminder, isLoading: reminderLoading } = useQuery<Reminder>({
@@ -183,6 +192,12 @@ export default function ReminderDetailPage() {
         <h1 className="min-w-0 flex-1 truncate text-lg font-bold">
           {reminder.title}
         </h1>
+        {reminder.google_list_id && (
+          <span className="flex items-center gap-1 rounded-md bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800">
+            <List className="h-3 w-3" />
+            {taskLists.find((l) => l.id === reminder.google_list_id)?.title || '기본 목록'}
+          </span>
+        )}
       </div>
 
       {/* Tabs */}

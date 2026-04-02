@@ -21,8 +21,15 @@ export interface Reminder {
   notify: boolean;
   notify_at: string | null;
   color: string | null;
+  google_task_id: string | null;
+  google_list_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskList {
+  id: string;
+  title: string;
 }
 
 export interface ReminderNote {

@@ -22,6 +22,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chat';
 import { CreateReminderDialog } from '@/components/reminders/create-reminder-dialog';
+import { TaskListSelector } from '@/components/reminders/task-list-selector';
 
 type FilterTab = 'all' | 'active' | 'completed';
 
@@ -32,10 +33,11 @@ const priorityConfig = {
 };
 
 export default function RemindersPage() {
-  const { setContext } = useChatStore();
+  const { setContext, reminderActionCount } = useChatStore();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<FilterTab>('all');
+  const [selectedListId, setSelectedListId] = useState<string>('@default');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
@@ -43,14 +45,21 @@ export default function RemindersPage() {
     setContext('reminder');
   }, [setContext]);
 
-  // Server-side filtering: pass status param based on current filter tab
+  // Refetch reminders when AI chat modifies reminders
+  useEffect(() => {
+    if (reminderActionCount > 0) {
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    }
+  }, [reminderActionCount, queryClient]);
+
+  // Server-side filtering: pass status and listId params
   const statusParam = filter === 'all' ? undefined : filter === 'active' ? 'active' : 'completed';
   const { data: reminders = [], isLoading } = useQuery<Reminder[]>({
-    queryKey: ['reminders', filter],
+    queryKey: ['reminders', filter, selectedListId],
     queryFn: async () => {
-      const res = await api.get('/api/reminders', {
-        params: statusParam ? { status: statusParam } : undefined,
-      });
+      const params: Record<string, string> = { listId: selectedListId };
+      if (statusParam) params.status = statusParam;
+      const res = await api.get('/api/reminders', { params });
       return res.data;
     },
   });
@@ -58,7 +67,7 @@ export default function RemindersPage() {
   const toggleCompleteMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/api/reminders/${id}/complete`),
     onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['reminders', filter] });
+      await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter]);
       queryClient.setQueryData<Reminder[]>(['reminders', filter], (old) =>
         old?.map((r) =>
@@ -78,7 +87,7 @@ export default function RemindersPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/api/reminders/${id}`),
     onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['reminders', filter] });
+      await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter]);
       queryClient.setQueryData<Reminder[]>(['reminders', filter], (old) =>
         old?.filter((r) => r.id !== id)
@@ -122,7 +131,10 @@ export default function RemindersPage() {
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-6 py-4">
-        <h1 className="text-xl font-bold">리마인더</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold">리마인더</h1>
+          <TaskListSelector value={selectedListId} onChange={setSelectedListId} />
+        </div>
         <Button size="sm" className="gap-1" onClick={() => setDialogOpen(true)}>
           <Plus className="h-4 w-4" />
           추가
@@ -247,7 +259,7 @@ export default function RemindersPage() {
       </ScrollArea>
 
       {/* Create Dialog */}
-      <CreateReminderDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <CreateReminderDialog open={dialogOpen} onOpenChange={setDialogOpen} listId={selectedListId} />
     </div>
   );
 }

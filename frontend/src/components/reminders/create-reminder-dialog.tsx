@@ -42,11 +42,13 @@ type CreateReminderForm = z.infer<typeof createReminderSchema>;
 interface CreateReminderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  listId?: string;
 }
 
 export function CreateReminderDialog({
   open,
   onOpenChange,
+  listId,
 }: CreateReminderDialogProps) {
   const queryClient = useQueryClient();
 
@@ -68,7 +70,8 @@ export function CreateReminderDialog({
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: CreateReminderForm) => api.post('/api/reminders', data),
+    mutationFn: (data: CreateReminderForm) =>
+      api.post('/api/reminders', { ...data, list_id: listId || '@default' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
       reset();

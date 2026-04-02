@@ -6,8 +6,15 @@ import { validateBody } from '../middleware/validate';
 import { supabaseAdmin } from '../services/supabase';
 import { parseUserMessage } from '../services/gemini';
 import { getCalendarClient } from '../services/google-calendar';
+import {
+  getTasksClient,
+  createGoogleTask,
+  updateGoogleTask,
+  deleteGoogleTask,
+  getTask as getGoogleTask,
+} from '../services/google-tasks';
 import { AIAction } from '../types';
-import type { calendar_v3 } from 'googleapis';
+import type { calendar_v3, tasks_v1 } from 'googleapis';
 
 const router = Router();
 
@@ -32,17 +39,23 @@ function colorNameToId(color: string): string | undefined {
   return COLOR_NAME_TO_ID[color.toLowerCase()] || undefined;
 }
 
-// Accept an optional pre-fetched calendar client to avoid re-creating per action
+// Accept optional pre-fetched clients to avoid re-creating per action
 async function executeAction(
   action: AIAction,
   userId: string,
   calendarClient?: calendar_v3.Calendar,
+  tasksClient?: tasks_v1.Tasks,
 ) {
   // Helper to get calendar — reuses passed client or fetches once
   const getCalendar = async () => {
     if (calendarClient) return calendarClient;
     const { calendar } = await getCalendarClient(userId);
     return calendar;
+  };
+
+  const getTasksApi = async () => {
+    if (tasksClient) return tasksClient;
+    return getTasksClient(userId);
   };
 
   switch (action.type) {
@@ -117,7 +130,16 @@ async function executeAction(
     }
 
     case 'create_reminder': {
-      const { title, priority, due_date, notify } = action.data as Record<string, unknown>;
+      const { title, priority, due_date, notify, list_id } = action.data as Record<string, unknown>;
+      const listId = (list_id as string) || '@default';
+
+      // Create in Google Tasks
+      const googleTask = await createGoogleTask(userId, listId, {
+        title: title as string,
+        due: due_date as string | undefined,
+      });
+
+      // Store metadata in Supabase
       const { data: reminder, error } = await supabaseAdmin
         .from('reminders')
         .insert({
@@ -127,6 +149,8 @@ async function executeAction(
           due_date: due_date || null,
           notify: notify || false,
           is_completed: false,
+          google_task_id: googleTask.id,
+          google_list_id: listId,
         })
         .select()
         .single();
@@ -135,10 +159,37 @@ async function executeAction(
     }
 
     case 'update_reminder': {
-      const { id, ...updateData } = action.data as Record<string, unknown>;
+      const { id, title, description, due_date, priority, notify, ...rest } = action.data as Record<string, unknown>;
+
+      // Fetch existing for google_task_id
+      const { data: existing } = await supabaseAdmin
+        .from('reminders')
+        .select('google_task_id, google_list_id')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .single();
+
+      // Update Google Tasks
+      if (existing?.google_task_id && existing?.google_list_id) {
+        const googleUpdates: Record<string, unknown> = {};
+        if (title !== undefined) googleUpdates.title = title;
+        if (description !== undefined) googleUpdates.notes = description;
+        if (due_date !== undefined) googleUpdates.due = due_date;
+        if (Object.keys(googleUpdates).length > 0) {
+          await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, googleUpdates as Record<string, string>);
+        }
+      }
+
+      const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (title !== undefined) updateFields.title = title;
+      if (description !== undefined) updateFields.description = description;
+      if (due_date !== undefined) updateFields.due_date = due_date;
+      if (priority !== undefined) updateFields.priority = priority;
+      if (notify !== undefined) updateFields.notify = notify;
+
       const { data: reminder, error } = await supabaseAdmin
         .from('reminders')
-        .update({ ...updateData, updated_at: new Date().toISOString() })
+        .update(updateFields)
         .eq('id', id)
         .eq('user_id', userId)
         .select()
@@ -159,6 +210,12 @@ async function executeAction(
         .single();
       if (existing) {
         reminderData = { ...existing, _deleted: true };
+        // Delete from Google Tasks
+        if (existing.google_task_id && existing.google_list_id) {
+          try {
+            await deleteGoogleTask(userId, existing.google_list_id, existing.google_task_id);
+          } catch { /* may already be deleted */ }
+        }
       }
       await supabaseAdmin
         .from('reminders')
@@ -170,6 +227,22 @@ async function executeAction(
 
     case 'complete_reminder': {
       const { id } = action.data as Record<string, string>;
+
+      // Fetch existing for google_task_id
+      const { data: existing } = await supabaseAdmin
+        .from('reminders')
+        .select('google_task_id, google_list_id')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .single();
+
+      // Update Google Tasks status
+      if (existing?.google_task_id && existing?.google_list_id) {
+        await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, {
+          status: 'completed',
+        });
+      }
+
       const { data: reminder, error } = await supabaseAdmin
         .from('reminders')
         .update({ is_completed: true, updated_at: new Date().toISOString() })
@@ -264,10 +337,10 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           }
         })(),
 
-        // 4. Incomplete reminders
+        // 4. Incomplete reminders (Supabase metadata with google_list_id)
         supabaseAdmin
           .from('reminders')
-          .select('id, title, priority, due_date, is_completed')
+          .select('id, title, priority, due_date, is_completed, google_task_id, google_list_id')
           .eq('user_id', req.userId)
           .eq('is_completed', false),
       ]);
@@ -320,8 +393,12 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
 
     // Pre-fetch calendar client once for all action executions
     let calendarClient: calendar_v3.Calendar | undefined;
+    let tasksApiClient: tasks_v1.Tasks | undefined;
     const hasCalendarActions = aiResponse.actions.some(
       (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+    );
+    const hasTaskActions = aiResponse.actions.some(
+      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder'].includes(a.type)
     );
     if (hasCalendarActions) {
       try {
@@ -331,12 +408,19 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         // Will fall back to per-action fetching
       }
     }
+    if (hasTaskActions) {
+      try {
+        tasksApiClient = await getTasksClient(req.userId!);
+      } catch {
+        // Will fall back to per-action fetching
+      }
+    }
 
     // Execute actions
     const actionResults = [];
     for (const action of aiResponse.actions) {
       try {
-        const result = await executeAction(action, req.userId!, calendarClient);
+        const result = await executeAction(action, req.userId!, calendarClient, tasksApiClient);
         actionResults.push(result);
       } catch (err) {
         actionResults.push({

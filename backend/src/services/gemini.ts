@@ -40,7 +40,7 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
   }
 
   const remindersBlock = existingReminders && existingReminders.length > 0
-    ? `\n== 현재 리마인더 ==\n${JSON.stringify(existingReminders, null, 2)}\n`
+    ? `\n== 현재 리마인더 (Google Tasks 연동) ==\n${JSON.stringify(existingReminders, null, 2)}\n`
     : '\n== 현재 리마인더 ==\n없음\n';
 
   const systemPrompt = `You are CalenMate AI assistant. You help users manage their calendar and reminders.
@@ -74,9 +74,10 @@ Respond ONLY with valid JSON:
   - Map Korean color names: 빨간색→tomato, 주황색→tangerine, 노란색→banana, 초록색→sage, 파란색→peacock, 보라색→grape, 회색→graphite, 분홍색→flamingo
 - For update/delete: data needs id of the target item
 
-#### Reminders: create_reminder, update_reminder, delete_reminder, complete_reminder
-- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false)
-- For update/delete/complete: data needs id
+#### Reminders (Google Tasks 연동): create_reminder, update_reminder, delete_reminder, complete_reminder
+- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (Google Tasks 목록 ID, 기본값: @default)
+- 리마인더는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
+- For update/delete/complete: data needs id (Supabase UUID)
 
 #### Instructions (주요 지시사항): save_instruction, delete_instruction
 - save_instruction: when user explicitly asks to save a rule/instruction for future use (e.g. "이걸 주요 지시사항에 저장해줘")
