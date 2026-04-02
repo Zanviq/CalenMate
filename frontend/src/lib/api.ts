@@ -13,7 +13,15 @@ function getSupabase() {
 // Cache the session to avoid fetching it on every API request
 let cachedAccessToken: string | null = null;
 let tokenExpiresAt = 0;
-const TOKEN_CACHE_MS = 30_000; // 30 seconds
+const TOKEN_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+// Extract JWT exp claim to avoid caching tokens that are about to expire
+function getJwtExpMs(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.exp ? payload.exp * 1000 : null;
+  } catch { return null; }
+}
 
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL,
@@ -37,7 +45,10 @@ api.interceptors.request.use(async (config) => {
 
   if (session?.access_token) {
     cachedAccessToken = session.access_token;
-    tokenExpiresAt = now + TOKEN_CACHE_MS;
+    // Use the earlier of: cache TTL or 30s before JWT expiry
+    const jwtExp = getJwtExpMs(session.access_token);
+    const cacheUntil = jwtExp ? Math.min(now + TOKEN_CACHE_MS, jwtExp - 30_000) : now + TOKEN_CACHE_MS;
+    tokenExpiresAt = Math.max(cacheUntil, now); // never set to the past
     config.headers.Authorization = `Bearer ${session.access_token}`;
   }
 

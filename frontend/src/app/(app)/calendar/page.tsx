@@ -101,9 +101,8 @@ export default function CalendarPage() {
         );
       }
     },
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
-    staleTime: 10_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
     retry: 2,
   });
 

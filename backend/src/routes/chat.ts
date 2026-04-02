@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validate';
 import { supabaseAdmin } from '../services/supabase';
 import { parseUserMessage } from '../services/gemini';
 import { getCalendarClient } from '../services/google-calendar';
+import { invalidateSummaryCache } from './summary';
 import {
   getTasksClient,
   createGoogleTask,
@@ -377,7 +378,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       title: r.title,
       priority: r.priority,
       due_date: r.due_date,
-      is_completed: r.is_completed,
+      google_list_id: r.google_list_id || '@default',
     }));
 
     // Parse message with Gemini
@@ -428,6 +429,11 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           data: { error: err instanceof Error ? err.message : 'Action failed' },
         });
       }
+    }
+
+    // Invalidate summary cache if any schedule-changing actions were executed
+    if (hasCalendarActions || hasTaskActions) {
+      invalidateSummaryCache(req.userId!);
     }
 
     // Save chat messages

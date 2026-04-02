@@ -58,9 +58,8 @@ export default function HomePage() {
       });
       return data;
     },
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
-    staleTime: 10_000,
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 60_000,
   });
 
   const { data: reminders = [], isLoading: remindersLoading } = useQuery<Reminder[]>({

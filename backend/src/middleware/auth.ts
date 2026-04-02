@@ -13,7 +13,7 @@ interface CachedAuth {
 }
 
 const authCache = new Map<string, CachedAuth>();
-const AUTH_CACHE_TTL_MS = 60 * 1000; // 1 minute
+const AUTH_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes (balance between performance and token revocation window)
 
 // Periodically clean up expired entries to prevent memory leaks
 setInterval(() => {

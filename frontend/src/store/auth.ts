@@ -6,6 +6,9 @@ import { invalidateApiToken } from '@/lib/api';
 import type { Profile } from '@/types';
 import type { Session } from '@supabase/supabase-js';
 
+// Module-level singleton — avoids creating a new client per method call
+const supabase = createClient();
+
 interface AuthState {
   user: Profile | null;
   session: Session | null;
@@ -21,7 +24,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   loading: true,
 
   initialize: () => {
-    const supabase = createClient();
     let initialized = false;
 
     const loadUser = async (session: Session | null) => {
@@ -47,7 +49,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     };
 
     // Initial session check
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
       if (!initialized) {
         loadUser(session);
       }
@@ -55,7 +57,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (_event: string, session: Session | null) => {
         loadUser(session);
       }
     );
@@ -64,7 +66,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   signInWithGoogle: async () => {
-    const supabase = createClient();
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -78,7 +79,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   signOut: async () => {
-    const supabase = createClient();
     await supabase.auth.signOut();
     invalidateApiToken();
     set({ user: null, session: null });

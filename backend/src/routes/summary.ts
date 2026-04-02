@@ -18,7 +18,12 @@ interface CachedSummary {
 }
 
 const summaryCache = new Map<string, CachedSummary>();
-const SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const SUMMARY_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes (Gemini calls are expensive)
+
+export function invalidateSummaryCache(userId: string) {
+  summaryCache.delete(`${userId}:today`);
+  summaryCache.delete(`${userId}:week`);
+}
 
 setInterval(() => {
   const now = Date.now();

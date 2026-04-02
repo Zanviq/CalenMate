@@ -62,14 +62,15 @@ export default function RemindersPage() {
       const res = await api.get('/api/reminders', { params });
       return res.data;
     },
+    staleTime: 30_000,
   });
 
   const toggleCompleteMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/api/reminders/${id}/complete`),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
-      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter]);
-      queryClient.setQueryData<Reminder[]>(['reminders', filter], (old) =>
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
+      queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId], (old) =>
         old?.map((r) =>
           r.id === id ? { ...r, is_completed: !r.is_completed } : r
         )
@@ -78,7 +79,7 @@ export default function RemindersPage() {
     },
     onError: (_err, _id, ctx) => {
       if (ctx?.previous) {
-        queryClient.setQueryData(['reminders', filter], ctx.previous);
+        queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
     },
     // No onSettled invalidation — optimistic update is sufficient, avoids UI flicker
@@ -88,15 +89,15 @@ export default function RemindersPage() {
     mutationFn: (id: string) => api.delete(`/api/reminders/${id}`),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
-      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter]);
-      queryClient.setQueryData<Reminder[]>(['reminders', filter], (old) =>
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
+      queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId], (old) =>
         old?.filter((r) => r.id !== id)
       );
       return { previous };
     },
     onError: (_err, _id, ctx) => {
       if (ctx?.previous) {
-        queryClient.setQueryData(['reminders', filter], ctx.previous);
+        queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
     },
     onSuccess: () => {

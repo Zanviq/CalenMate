@@ -34,13 +34,13 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
   if (calendarError) {
     eventsBlock = `\n== 현재 등록된 일정 ==\n캘린더 조회 실패: ${calendarError}\n사용자에게 이 오류를 알려줘라.\n`;
   } else if (existingEvents && existingEvents.length > 0) {
-    eventsBlock = `\n== 현재 등록된 일정 (향후 30일, Google Calendar에서 실시간 조회) ==\n${JSON.stringify(existingEvents, null, 2)}\n`;
+    eventsBlock = `\n== 현재 등록된 일정 (향후 30일) ==\n${JSON.stringify(existingEvents)}\n`;
   } else {
-    eventsBlock = '\n== 현재 등록된 일정 ==\n등록된 일정 없음\n';
+    eventsBlock = '\n== 현재 등록된 일정 ==\n없음\n';
   }
 
   const remindersBlock = existingReminders && existingReminders.length > 0
-    ? `\n== 현재 리마인더 (Google Tasks 연동) ==\n${JSON.stringify(existingReminders, null, 2)}\n`
+    ? `\n== 현재 리마인더 (Google Tasks) ==\n${JSON.stringify(existingReminders)}\n`
     : '\n== 현재 리마인더 ==\n없음\n';
 
   const systemPrompt = `You are CalenMate AI assistant. You help users manage their calendar and reminders.
@@ -137,13 +137,32 @@ export async function summarizeSchedule(
 
   const periodLabel = period === 'today' ? '오늘' : '이번 주';
 
+  // Trim events to essential fields only to reduce tokens
+  const trimmedEvents = events.map((e) => {
+    const start = e.start as { dateTime?: string; date?: string } | undefined;
+    const end = e.end as { dateTime?: string; date?: string } | undefined;
+    return {
+      title: e.summary || '(제목 없음)',
+      date: start?.dateTime?.slice(0, 10) || start?.date || '',
+      start_time: start?.dateTime?.slice(11, 16) || '',
+      end_time: end?.dateTime?.slice(11, 16) || '',
+      allDay: !start?.dateTime,
+    };
+  });
+
+  const trimmedReminders = reminders.map((r) => ({
+    title: r.title,
+    priority: r.priority,
+    due_date: r.due_date,
+  }));
+
   const prompt = `당신은 CalenMate AI 비서입니다. ${periodLabel}의 일정과 리마인더를 한국어로 간결하게 요약해주세요.
 
 일정:
-${JSON.stringify(events, null, 2)}
+${JSON.stringify(trimmedEvents)}
 
 리마인더:
-${JSON.stringify(reminders, null, 2)}
+${JSON.stringify(trimmedReminders)}
 
 요약을 자연스러운 한국어로 작성해주세요. 중요한 일정을 강조하고, 시간순으로 정리해주세요.`;
 

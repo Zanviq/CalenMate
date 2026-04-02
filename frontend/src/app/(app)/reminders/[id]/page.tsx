@@ -74,6 +74,7 @@ export default function ReminderDetailPage() {
       const res = await api.get('/api/task-lists');
       return res.data;
     },
+    staleTime: 5 * 60 * 1000,
   });
 
   // Fetch reminder

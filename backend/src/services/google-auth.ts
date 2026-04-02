@@ -16,7 +16,7 @@ interface CachedAuth {
 }
 
 const authCache = new Map<string, CachedAuth>();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes (Google tokens auto-refresh via event handler)
 
 function clearExpiredCache() {
   const now = Date.now();
@@ -60,20 +60,22 @@ export async function getOAuth2Client(userId: string): Promise<OAuth2Client> {
     refresh_token: profile.google_refresh_token,
   });
 
-  oauth2Client.on('tokens', async (tokens) => {
-    const update: Record<string, string> = {
-      updated_at: new Date().toISOString(),
-    };
-    if (tokens.access_token) {
-      update.google_access_token = tokens.access_token;
-    }
-    if (tokens.refresh_token) {
-      update.google_refresh_token = tokens.refresh_token;
-    }
-    await supabaseAdmin
-      .from('profiles')
-      .update(update)
-      .eq('id', userId);
+  // Debounce token persistence to avoid hammering Supabase on rapid refreshes
+  let tokenSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingTokens: { access_token?: string; refresh_token?: string } = {};
+
+  oauth2Client.on('tokens', (tokens) => {
+    if (tokens.access_token) pendingTokens.access_token = tokens.access_token;
+    if (tokens.refresh_token) pendingTokens.refresh_token = tokens.refresh_token;
+
+    if (tokenSaveTimer) clearTimeout(tokenSaveTimer);
+    tokenSaveTimer = setTimeout(async () => {
+      const update: Record<string, string> = { updated_at: new Date().toISOString() };
+      if (pendingTokens.access_token) update.google_access_token = pendingTokens.access_token;
+      if (pendingTokens.refresh_token) update.google_refresh_token = pendingTokens.refresh_token;
+      pendingTokens = {};
+      await supabaseAdmin.from('profiles').update(update).eq('id', userId);
+    }, 500);
   });
 
   authCache.set(userId, {
