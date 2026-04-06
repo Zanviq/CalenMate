@@ -100,7 +100,7 @@ export default function ReminderDetailPage() {
   });
 
   // Fetch notes
-  const { data: notes, isLoading: notesLoading } = useQuery<ReminderNote>({
+  const { data: notes, isLoading: notesLoading } = useQuery<ReminderNote | null>({
     queryKey: ['reminders', id, 'notes'],
     queryFn: async () => {
       const res = await api.get(`/api/reminders/${id}/notes`);
@@ -187,11 +187,11 @@ export default function ReminderDetailPage() {
       },
     }),
     onSuccess: () => {
-      // Remove this specific reminder from cache first to prevent refetch of deleted item
+      // Remove this reminder's cache to prevent 404 refetch
       queryClient.removeQueries({ queryKey: ['reminders', id] });
-      router.push('/reminders');
-      // Invalidate list queries after navigation to refresh the list
+      // Invalidate list queries before navigation so the list refreshes on mount
       queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+      router.push('/reminders');
     },
     onError: () => {
       toast.error('리마인더 삭제에 실패했습니다');

@@ -26,18 +26,19 @@ router.get('/:id/notes', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const { data: notes, error } = await supabaseAdmin
+    const { data: note, error } = await supabaseAdmin
       .from('reminder_notes')
       .select('*')
       .eq('reminder_id', id)
-      .eq('user_id', req.userId);
+      .eq('user_id', req.userId)
+      .maybeSingle();
 
     if (error) {
       res.status(500).json({ error: 'Failed to fetch notes' });
       return;
     }
 
-    res.json(notes);
+    res.json(note);
   } catch {
     res.status(500).json({ error: 'Failed to fetch notes' });
   }

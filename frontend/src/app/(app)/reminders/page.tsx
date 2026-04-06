@@ -45,6 +45,9 @@ export default function RemindersPage() {
 
   useEffect(() => {
     setContext('reminder');
+    return () => {
+      if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
+    };
   }, [setContext]);
 
   // Refetch reminders when AI chat modifies reminders
@@ -134,19 +137,14 @@ export default function RemindersPage() {
     toggleCompleteMutation.mutate(reminder);
   };
 
-  const handleDelete = (e: React.MouseEvent, reminder: Reminder) => {
+  const handleDeleteStart = (e: React.MouseEvent, reminderId: string) => {
     e.stopPropagation();
-    if (deleteTarget === reminder.id) {
-      if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
-      deleteMutation.mutate(reminder);
-    } else {
-      setDeleteTarget(reminder.id);
-      if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
-      deleteTimeoutRef.current = setTimeout(() => setDeleteTarget(null), 3000);
-    }
+    if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
+    setDeleteTarget(reminderId);
+    deleteTimeoutRef.current = setTimeout(() => setDeleteTarget(null), 3000);
   };
 
-  const handleConfirmDelete = (e: React.MouseEvent, reminder: Reminder) => {
+  const handleDeleteConfirm = (e: React.MouseEvent, reminder: Reminder) => {
     e.stopPropagation();
     if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
     deleteMutation.mutate(reminder);
@@ -266,21 +264,24 @@ export default function RemindersPage() {
                 )}
 
                 {/* Delete */}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="shrink-0 text-zinc-400 hover:text-destructive"
-                  onClick={(e) => handleDelete(e, reminder)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-                {deleteTarget === reminder.id && (
-                  <span
-                    className="cursor-pointer text-xs font-medium text-destructive hover:underline"
-                    onClick={(e) => handleConfirmDelete(e, reminder)}
+                {deleteTarget === reminder.id ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-xs font-medium text-destructive hover:bg-destructive/10"
+                    onClick={(e) => handleDeleteConfirm(e, reminder)}
                   >
                     삭제 확인
-                  </span>
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="shrink-0 text-zinc-400 hover:text-destructive"
+                    onClick={(e) => handleDeleteStart(e, reminder.id)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
                 )}
               </div>
             ))}
