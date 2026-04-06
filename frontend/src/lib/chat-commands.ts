@@ -101,6 +101,29 @@ export const commands: CommandDefinition[] = [
     },
   },
   {
+    name: 'reset_all',
+    description: '모든 컨텍스트의 대화 기억 초기화',
+    execute: async (context) => {
+      try {
+        await api.delete('/api/chat/history');
+        return {
+          message: systemMessage(
+            '모든 대화 기억이 초기화되었습니다.',
+            context,
+          ),
+          effects: { clearMessages: true },
+        };
+      } catch {
+        return {
+          message: systemMessage(
+            '대화 기억 초기화에 실패했습니다.',
+            context,
+          ),
+        };
+      }
+    },
+  },
+  {
     name: 'today',
     description: '오늘 일정 빠르게 보기',
     execute: async (context) => {
@@ -187,12 +210,21 @@ export const commands: CommandDefinition[] = [
   },
   {
     name: 'clear',
-    description: '채팅 화면 정리 (기억은 유지)',
+    description: '현재 채팅 기록 삭제',
     execute: async (context) => {
-      return {
-        message: systemMessage('채팅 화면이 정리되었습니다.', context),
-        effects: { clearMessages: true },
-      };
+      try {
+        await api.delete('/api/chat/history', {
+          params: { context },
+        });
+        return {
+          message: systemMessage('채팅 기록이 삭제되었습니다.', context),
+          effects: { clearMessages: true },
+        };
+      } catch {
+        return {
+          message: systemMessage('채팅 기록 삭제에 실패했습니다.', context),
+        };
+      }
     },
   },
 ];

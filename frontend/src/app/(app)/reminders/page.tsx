@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
@@ -41,6 +41,7 @@ export default function RemindersPage() {
   const [selectedListId, setSelectedListId] = useState<string>('@default');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const deleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setContext('reminder');
@@ -136,11 +137,19 @@ export default function RemindersPage() {
   const handleDelete = (e: React.MouseEvent, reminder: Reminder) => {
     e.stopPropagation();
     if (deleteTarget === reminder.id) {
+      if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
       deleteMutation.mutate(reminder);
     } else {
       setDeleteTarget(reminder.id);
-      setTimeout(() => setDeleteTarget(null), 3000);
+      if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
+      deleteTimeoutRef.current = setTimeout(() => setDeleteTarget(null), 3000);
     }
+  };
+
+  const handleConfirmDelete = (e: React.MouseEvent, reminder: Reminder) => {
+    e.stopPropagation();
+    if (deleteTimeoutRef.current) clearTimeout(deleteTimeoutRef.current);
+    deleteMutation.mutate(reminder);
   };
 
   return (
@@ -266,7 +275,12 @@ export default function RemindersPage() {
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
                 {deleteTarget === reminder.id && (
-                  <span className="text-xs text-destructive">한번 더 클릭</span>
+                  <span
+                    className="cursor-pointer text-xs font-medium text-destructive hover:underline"
+                    onClick={(e) => handleConfirmDelete(e, reminder)}
+                  >
+                    삭제 확인
+                  </span>
                 )}
               </div>
             ))}

@@ -187,8 +187,11 @@ export default function ReminderDetailPage() {
       },
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      // Remove this specific reminder from cache first to prevent refetch of deleted item
+      queryClient.removeQueries({ queryKey: ['reminders', id] });
       router.push('/reminders');
+      // Invalidate list queries after navigation to refresh the list
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
     },
     onError: () => {
       toast.error('리마인더 삭제에 실패했습니다');
