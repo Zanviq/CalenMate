@@ -164,14 +164,20 @@ export default function ReminderDetailPage() {
 
   // Toggle completion
   const toggleCompleteMutation = useMutation({
-    mutationFn: () => api.patch(`/api/reminders/${id}/complete`, {
-      google_task_id: reminder?.google_task_id,
-      google_list_id: reminder?.google_list_id,
-      is_completed: reminder?.is_completed,
-    }),
-    onSuccess: (res) => {
-      queryClient.setQueryData(['reminders', id], res.data);
-      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+    mutationFn: async () => {
+      const res = await api.patch(`/api/reminders/${id}/complete`, {
+        google_task_id: reminder?.google_task_id,
+        google_list_id: reminder?.google_list_id,
+        is_completed: reminder?.is_completed,
+      });
+      return res.data as Reminder;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['reminders', id], updated);
+      // Update list caches directly instead of refetch
+      queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
+        old?.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+      );
     },
     onError: () => {
       toast.error('상태 변경에 실패했습니다');

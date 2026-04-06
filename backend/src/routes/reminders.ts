@@ -370,8 +370,8 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
     let googleListId = bodyListId as string | undefined;
     let currentCompleted = bodyCompleted as boolean | undefined;
 
-    // If IDs not in body, fetch from DB (fallback)
-    if (!googleTaskId || !googleListId || currentCompleted === undefined) {
+    // Only query DB if frontend didn't provide all required fields
+    if (currentCompleted === undefined) {
       const { data: existing, error: findError } = await supabaseAdmin
         .from('reminders')
         .select('id, is_completed, google_task_id, google_list_id')
@@ -385,22 +385,13 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
       }
       googleTaskId = googleTaskId || existing.google_task_id;
       googleListId = googleListId || existing.google_list_id;
-      if (currentCompleted === undefined) currentCompleted = existing.is_completed;
+      currentCompleted = existing.is_completed;
     }
 
     const newCompleted = !currentCompleted;
 
-    // Update Google Tasks + Supabase in parallel
-    const googleUpdate = (googleTaskId && googleListId)
-      ? updateGoogleTask(
-          req.userId!,
-          googleListId,
-          googleTaskId,
-          { status: newCompleted ? 'completed' : 'needsAction' },
-        )
-      : Promise.resolve(null);
-
-    const supabaseUpdate = supabaseAdmin
+    // Update Supabase first (fast) and respond immediately
+    const { data: reminder, error } = await supabaseAdmin
       .from('reminders')
       .update({
         is_completed: newCompleted,
@@ -411,14 +402,23 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
       .select()
       .single();
 
-    const [, { data: reminder, error }] = await Promise.all([googleUpdate, supabaseUpdate]);
-
     if (error) {
       res.status(500).json({ error: 'Failed to update reminder' });
       return;
     }
 
+    // Respond immediately, sync Google Tasks in background
     res.json(reminder);
+
+    // Fire-and-forget Google Tasks sync
+    if (googleTaskId && googleListId) {
+      updateGoogleTask(
+        req.userId!,
+        googleListId,
+        googleTaskId,
+        { status: newCompleted ? 'completed' : 'needsAction' },
+      ).catch((err) => console.error('Google Tasks sync failed:', err));
+    }
   } catch {
     res.status(500).json({ error: 'Failed to toggle reminder completion' });
   }

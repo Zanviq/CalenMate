@@ -103,15 +103,18 @@ export default function HomePage() {
   });
 
   const toggleCompleteMutation = useMutation({
-    mutationFn: (reminder: Reminder) => api.patch(`/api/reminders/${reminder.id}/complete`, {
-      google_task_id: reminder.google_task_id,
-      google_list_id: reminder.google_list_id,
-      is_completed: reminder.is_completed,
-    }),
+    mutationFn: async (reminder: Reminder) => {
+      const res = await api.patch(`/api/reminders/${reminder.id}/complete`, {
+        google_task_id: reminder.google_task_id,
+        google_list_id: reminder.google_list_id,
+        is_completed: reminder.is_completed,
+      });
+      return res.data as Reminder;
+    },
     onMutate: async (reminder) => {
       await queryClient.cancelQueries({ queryKey: ['reminders'] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders']);
-      queryClient.setQueryData<Reminder[]>(['reminders'], (old) =>
+      queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
         old?.map((r) =>
           r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
         )
@@ -124,8 +127,10 @@ export default function HomePage() {
       }
       toast.error('리마인더 상태 변경에 실패했습니다');
     },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    onSuccess: (updated) => {
+      queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
+        old?.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+      );
     },
   });
 
