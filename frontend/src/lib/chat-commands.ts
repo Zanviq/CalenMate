@@ -152,6 +152,40 @@ export const commands: CommandDefinition[] = [
     },
   },
   {
+    name: 'reminders',
+    description: '진행 중인 리마인더 목록 보기',
+    execute: async (context) => {
+      try {
+        const { data } = await api.get<
+          { title: string; priority: string; due_date: string | null; is_completed: boolean }[]
+        >('/api/reminders', { params: { status: 'active' } });
+        if (data.length === 0) {
+          return {
+            message: systemMessage('진행 중인 리마인더가 없습니다.', context),
+          };
+        }
+        const priorityLabel: Record<string, string> = { high: '🔴', medium: '🟡', low: '🔵' };
+        const lines = data.map((r) => {
+          const pri = priorityLabel[r.priority] || '⚪';
+          const due = r.due_date
+            ? ` (${new Date(r.due_date).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })})`
+            : '';
+          return `  ${pri} ${r.title}${due}`;
+        });
+        return {
+          message: systemMessage(
+            `진행 중인 리마인더 (${data.length}건):\n${lines.join('\n')}`,
+            context,
+          ),
+        };
+      } catch {
+        return {
+          message: systemMessage('리마인더를 불러오는 데 실패했습니다.', context),
+        };
+      }
+    },
+  },
+  {
     name: 'clear',
     description: '채팅 화면 정리 (기억은 유지)',
     execute: async (context) => {

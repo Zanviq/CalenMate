@@ -33,7 +33,7 @@ import type { CalendarEvent, Reminder, UserInstruction } from '@/types';
 
 export default function HomePage() {
   const { user } = useAuthStore();
-  const { setContext, instructionActionCount } = useChatStore();
+  const { setContext, instructionActionCount, reminderActionCount, calendarActionCount } = useChatStore();
   const router = useRouter();
   const queryClient = useQueryClient();
 
@@ -41,12 +41,25 @@ export default function HomePage() {
     setContext('home');
   }, [setContext]);
 
-  // Refetch instructions when AI chat modifies them
+  // Refetch data when AI chat modifies them
   useEffect(() => {
     if (instructionActionCount > 0) {
       queryClient.invalidateQueries({ queryKey: ['user-instructions'] });
     }
   }, [instructionActionCount, queryClient]);
+
+  useEffect(() => {
+    if (reminderActionCount > 0) {
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    }
+  }, [reminderActionCount, queryClient]);
+
+  useEffect(() => {
+    if (calendarActionCount > 0) {
+      queryClient.invalidateQueries({ queryKey: ['today-events'] });
+      queryClient.invalidateQueries({ queryKey: ['today-summary'] });
+    }
+  }, [calendarActionCount, queryClient]);
 
   const now = new Date();
   const todayStart = startOfDay(now).toISOString();

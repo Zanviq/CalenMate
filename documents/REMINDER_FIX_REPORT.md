@@ -109,3 +109,22 @@
 | `frontend/src/app/(app)/reminders/[id]/page.tsx` | 삭제/완료 버튼 추가, AI 노트 생성 |
 | `backend/src/routes/reminders.ts` | AI 노트 생성 엔드포인트 (필요 시) |
 | `backend/src/services/gemini.ts` | 리마인더 노트 생성 프롬프트 (필요 시) |
+| `frontend/src/lib/chat-commands.ts` | `/reminders` 슬래시 명령어 ��가 |
+
+---
+
+## 5. 추가 발견 및 수정 사항
+
+### 5.1 홈 페이지 AI 액션 미반영 (High)
+
+**현상**: AI 채팅에서 리마인더/일정 변경 후 홈 화면 데이터가 갱신되지 않음.
+
+**원인**: `home/page.tsx`에서 `reminderActionCount`, `calendarActionCount`를 감시하지 않음.
+
+**수정**: 두 카운터 모두 감시하여 변경 시 해당 쿼리 무효화.
+
+### 5.2 슬래시 명령어 부족 (Medium)
+
+**현상**: `/help`, `/today`, `/instructions`, `/clear`, `/reset_memory`만 존재. 리마인더 관련 빠른 조회 불가.
+
+**수정**: `/reminders` 명령어 추가 — 진행 중인 리마인더 목록을 우선순위 이모지와 함께 표시.
