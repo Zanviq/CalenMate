@@ -1,17 +1,104 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTheme } from 'next-themes';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { LogOut, CheckCircle2, Bell, Palette } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  LogOut,
+  CheckCircle2,
+  Palette,
+  Sun,
+  Moon,
+  Monitor,
+  Calendar,
+  Flag,
+} from 'lucide-react';
 import { useAuthStore } from '@/store/auth';
+import api from '@/lib/api';
+
+interface UserSettings {
+  theme: 'light' | 'dark' | 'system';
+  defaultCalendarView: 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
+  defaultReminderPriority: 'low' | 'medium' | 'high';
+  language: 'ko' | 'en';
+}
+
+const themeOptions = [
+  { value: 'light', label: '라이트', icon: Sun },
+  { value: 'dark', label: '다크', icon: Moon },
+  { value: 'system', label: '시스템', icon: Monitor },
+] as const;
+
+const calendarViewOptions = [
+  { value: 'dayGridMonth', label: '월간' },
+  { value: 'timeGridWeek', label: '주간' },
+  { value: 'timeGridDay', label: '일간' },
+] as const;
+
+const priorityOptions = [
+  { value: 'low', label: '낮음' },
+  { value: 'medium', label: '보통' },
+  { value: 'high', label: '높음' },
+] as const;
 
 export default function SettingsPage() {
   const { user, signOut } = useAuthStore();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const { theme, setTheme } = useTheme();
+
+  const { data: settings } = useQuery<UserSettings>({
+    queryKey: ['settings'],
+    queryFn: async () => {
+      const res = await api.get('/api/settings');
+      return res.data;
+    },
+  });
+
+  // Sync theme from server settings on load
+  useEffect(() => {
+    if (settings?.theme && settings.theme !== theme) {
+      setTheme(settings.theme);
+    }
+  }, [settings?.theme]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateSettingsMutation = useMutation({
+    mutationFn: async (patch: Partial<UserSettings>) => {
+      const res = await api.patch('/api/settings', patch);
+      return res.data as UserSettings;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(['settings'], data);
+    },
+  });
+
+  const handleThemeChange = (value: string) => {
+    setTheme(value);
+    updateSettingsMutation.mutate({ theme: value as UserSettings['theme'] });
+  };
+
+  const handleCalendarViewChange = (value: string | null) => {
+    if (!value) return;
+    updateSettingsMutation.mutate({ defaultCalendarView: value as UserSettings['defaultCalendarView'] });
+  };
+
+  const handlePriorityChange = (value: string | null) => {
+    if (!value) return;
+    updateSettingsMutation.mutate({ defaultReminderPriority: value as UserSettings['defaultReminderPriority'] });
+  };
 
   const handleSignOut = async () => {
     await signOut();
@@ -56,28 +143,12 @@ export default function SettingsPage() {
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm">Google Calendar</span>
-            <Badge variant="secondary" className="bg-green-50 text-green-700">
+            <Badge variant="secondary" className="bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400">
               연동됨
             </Badge>
           </div>
           <p className="text-xs text-zinc-400">
             로그인 시 캘린더 읽기/쓰기 권한이 부여되어 자동으로 동기화됩니다.
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* Notifications */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Bell className="h-4 w-4" />
-            알림 설정
-          </CardTitle>
-          <CardDescription>리마인더 및 일정 알림을 설정합니다.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-zinc-400">
-            브라우저 알림 기능은 추후 업데이트 예정입니다.
           </p>
         </CardContent>
       </Card>
@@ -92,19 +163,105 @@ export default function SettingsPage() {
           <CardDescription>앱의 외관을 설정합니다.</CardDescription>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-zinc-400">
-            테마 설정은 추후 업데이트 예정입니다.
-          </p>
+          <div className="flex gap-3">
+            {themeOptions.map((opt) => {
+              const Icon = opt.icon;
+              const isActive = (theme ?? 'system') === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => handleThemeChange(opt.value)}
+                  className={`flex flex-1 flex-col items-center gap-2 rounded-lg border-2 p-4 transition-all ${
+                    isActive
+                      ? 'border-foreground bg-muted'
+                      : 'border-transparent bg-muted/50 hover:bg-muted'
+                  }`}
+                >
+                  <Icon className={`h-5 w-5 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`} />
+                  <span className={`text-sm ${isActive ? 'font-medium' : 'text-muted-foreground'}`}>
+                    {opt.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </CardContent>
       </Card>
 
-      <Separator />
+      {/* Defaults */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Calendar className="h-4 w-4" />
+            기본값 설정
+          </CardTitle>
+          <CardDescription>새 항목 생성 시 적용되는 기본값입니다.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">기본 캘린더 뷰</p>
+              <p className="text-xs text-muted-foreground">캘린더 페이지의 기본 표시 방식</p>
+            </div>
+            <Select
+              value={settings?.defaultCalendarView ?? 'dayGridMonth'}
+              onValueChange={handleCalendarViewChange}
+            >
+              <SelectTrigger className="w-28">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {calendarViewOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-      {/* Sign Out */}
-      <Button variant="outline" className="w-full gap-2" onClick={handleSignOut}>
-        <LogOut className="h-4 w-4" />
-        로그아웃
-      </Button>
+          <Separator />
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium flex items-center gap-1.5">
+                <Flag className="h-3.5 w-3.5" />
+                기본 리마인더 우선순위
+              </p>
+              <p className="text-xs text-muted-foreground">새 리마인더의 기본 우선순위</p>
+            </div>
+            <Select
+              value={settings?.defaultReminderPriority ?? 'medium'}
+              onValueChange={handlePriorityChange}
+            >
+              <SelectTrigger className="w-28">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {priorityOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Danger Zone */}
+      <Card className="border-red-200 dark:border-red-900">
+        <CardContent className="flex items-center justify-between pt-6">
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium">로그아웃</p>
+            <p className="text-xs text-muted-foreground">현재 계정에서 로그아웃합니다.</p>
+          </div>
+          <Button variant="outline" className="gap-2 text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950" onClick={handleSignOut}>
+            <LogOut className="h-4 w-4" />
+            로그아웃
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

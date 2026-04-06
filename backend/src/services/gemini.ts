@@ -128,6 +128,33 @@ Respond ONLY with valid JSON:
   }
 }
 
+export async function generateReminderNote(reminder: {
+  title: string;
+  description?: string | null;
+  due_date?: string | null;
+  priority?: string;
+}): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+  const prompt = `당신은 CalenMate AI 비서입니다. 아래 리마인더에 대한 실용적인 노트를 마크다운 형식으로 작성해주세요.
+
+리마인더:
+- 제목: ${reminder.title}
+${reminder.description ? `- 설명: ${reminder.description}` : ''}
+${reminder.due_date ? `- 마감일: ${reminder.due_date}` : ''}
+${reminder.priority ? `- 우선순위: ${reminder.priority}` : ''}
+
+다음 내용을 포함해주세요:
+1. **체크리스트**: 이 할 일을 완료하기 위한 구체적인 단계들
+2. **참고사항**: 작업 시 고려할 점이나 팁
+3. **관련 키워드**: 검색이나 참고에 도움이 될 키워드
+
+간결하고 실용적으로 작성하세요. 한국어로 답변하세요.`;
+
+  const result = await model.generateContent(prompt);
+  return result.response.text();
+}
+
 export async function summarizeSchedule(
   events: Record<string, unknown>[],
   reminders: Record<string, unknown>[],

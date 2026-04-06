@@ -35,6 +35,8 @@ const updateReminderSchema = z.object({
   notify: z.boolean().optional(),
   notify_at: z.string().nullable().optional(),
   color: z.string().max(20).nullable().optional(),
+  google_task_id: z.string().nullable().optional(),
+  google_list_id: z.string().nullable().optional(),
 });
 
 // Helper: merge Google Task data with Supabase metadata
@@ -235,34 +237,37 @@ router.post('/', validateBody(createReminderSchema), async (req: AuthRequest, re
 router.put('/:id', validateBody(updateReminderSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { title, description, due_date, priority, notify, notify_at, color } = req.body;
+    const { title, description, due_date, priority, notify, notify_at, color,
+            google_task_id: bodyTaskId, google_list_id: bodyListId } = req.body;
 
-    // Fetch existing to get google_task_id
-    const { data: existing, error: findError } = await supabaseAdmin
-      .from('reminders')
-      .select('google_task_id, google_list_id')
-      .eq('id', id)
-      .eq('user_id', req.userId)
-      .single();
+    // Use IDs from request body if provided, otherwise fetch from DB
+    let googleTaskId = bodyTaskId as string | undefined;
+    let googleListId = bodyListId as string | undefined;
 
-    if (findError || !existing) {
-      res.status(404).json({ error: 'Reminder not found' });
-      return;
-    }
+    if (!googleTaskId || !googleListId) {
+      const { data: existing, error: findError } = await supabaseAdmin
+        .from('reminders')
+        .select('google_task_id, google_list_id')
+        .eq('id', id)
+        .eq('user_id', req.userId)
+        .single();
 
-    // Update Google Tasks (title, description/notes, due_date)
-    if (existing.google_task_id && existing.google_list_id) {
-      const googleUpdates: Record<string, string | null | undefined> = {};
-      if (title !== undefined) googleUpdates.title = title;
-      if (description !== undefined) googleUpdates.notes = description;
-      if (due_date !== undefined) googleUpdates.due = due_date;
-      if (Object.keys(googleUpdates).length > 0) {
-        await updateGoogleTask(req.userId!, existing.google_list_id, existing.google_task_id, googleUpdates);
+      if (findError || !existing) {
+        res.status(404).json({ error: 'Reminder not found' });
+        return;
       }
+      googleTaskId = existing.google_task_id;
+      googleListId = existing.google_list_id;
     }
 
-    // Update Supabase metadata
-    const { data: reminder, error } = await supabaseAdmin
+    // Build Google Tasks updates
+    const googleUpdates: Record<string, string | null | undefined> = {};
+    if (title !== undefined) googleUpdates.title = title;
+    if (description !== undefined) googleUpdates.notes = description;
+    if (due_date !== undefined) googleUpdates.due = due_date;
+
+    // Run Google Tasks update + Supabase update in parallel
+    const supabaseUpdate = supabaseAdmin
       .from('reminders')
       .update({
         ...(title !== undefined && { title }),
@@ -278,6 +283,12 @@ router.put('/:id', validateBody(updateReminderSchema), async (req: AuthRequest, 
       .eq('user_id', req.userId)
       .select()
       .single();
+
+    const googleUpdate = (googleTaskId && googleListId && Object.keys(googleUpdates).length > 0)
+      ? updateGoogleTask(req.userId!, googleListId, googleTaskId, googleUpdates)
+      : Promise.resolve(null);
+
+    const [{ data: reminder, error }, _googleResult] = await Promise.all([supabaseUpdate, googleUpdate]);
 
     if (error) {
       if (error.code === 'PGRST116') {
@@ -298,33 +309,40 @@ router.put('/:id', validateBody(updateReminderSchema), async (req: AuthRequest, 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const { google_task_id: bodyTaskId, google_list_id: bodyListId } = req.query;
 
-    // Fetch existing to get google_task_id
-    const { data: existing, error: findError } = await supabaseAdmin
-      .from('reminders')
-      .select('google_task_id, google_list_id')
-      .eq('id', id)
-      .eq('user_id', req.userId)
-      .single();
+    let googleTaskId = bodyTaskId as string | undefined;
+    let googleListId = bodyListId as string | undefined;
 
-    if (findError || !existing) {
-      res.status(404).json({ error: 'Reminder not found' });
-      return;
+    // If IDs not in query params, fetch from DB
+    if (!googleTaskId || !googleListId) {
+      const { data: existing, error: findError } = await supabaseAdmin
+        .from('reminders')
+        .select('google_task_id, google_list_id')
+        .eq('id', id)
+        .eq('user_id', req.userId)
+        .single();
+
+      if (findError || !existing) {
+        res.status(404).json({ error: 'Reminder not found' });
+        return;
+      }
+      googleTaskId = existing.google_task_id;
+      googleListId = existing.google_list_id;
     }
 
-    // Delete from Google Tasks
-    if (existing.google_task_id && existing.google_list_id) {
-      try {
-        await deleteGoogleTask(req.userId!, existing.google_list_id, existing.google_task_id);
-      } catch { /* Google task may already be deleted */ }
-    }
+    // Delete from Google Tasks + Supabase in parallel
+    const googleDelete = (googleTaskId && googleListId)
+      ? deleteGoogleTask(req.userId!, googleListId, googleTaskId).catch(() => { /* may already be deleted */ })
+      : Promise.resolve();
 
-    // Delete from Supabase
-    const { error, count } = await supabaseAdmin
+    const supabaseDelete = supabaseAdmin
       .from('reminders')
       .delete({ count: 'exact' })
       .eq('id', id)
       .eq('user_id', req.userId);
+
+    const [, { error, count }] = await Promise.all([googleDelete, supabaseDelete]);
 
     if (error) {
       res.status(500).json({ error: 'Failed to delete reminder' });
@@ -346,33 +364,43 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
 router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const { google_task_id: bodyTaskId, google_list_id: bodyListId, is_completed: bodyCompleted } = req.body ?? {};
 
-    const { data: existing, error: findError } = await supabaseAdmin
-      .from('reminders')
-      .select('id, is_completed, google_task_id, google_list_id')
-      .eq('id', id)
-      .eq('user_id', req.userId)
-      .single();
+    let googleTaskId = bodyTaskId as string | undefined;
+    let googleListId = bodyListId as string | undefined;
+    let currentCompleted = bodyCompleted as boolean | undefined;
 
-    if (findError || !existing) {
-      res.status(404).json({ error: 'Reminder not found' });
-      return;
+    // If IDs not in body, fetch from DB (fallback)
+    if (!googleTaskId || !googleListId || currentCompleted === undefined) {
+      const { data: existing, error: findError } = await supabaseAdmin
+        .from('reminders')
+        .select('id, is_completed, google_task_id, google_list_id')
+        .eq('id', id)
+        .eq('user_id', req.userId)
+        .single();
+
+      if (findError || !existing) {
+        res.status(404).json({ error: 'Reminder not found' });
+        return;
+      }
+      googleTaskId = googleTaskId || existing.google_task_id;
+      googleListId = googleListId || existing.google_list_id;
+      if (currentCompleted === undefined) currentCompleted = existing.is_completed;
     }
 
-    const newCompleted = !existing.is_completed;
+    const newCompleted = !currentCompleted;
 
-    // Update Google Tasks status
-    if (existing.google_task_id && existing.google_list_id) {
-      await updateGoogleTask(
-        req.userId!,
-        existing.google_list_id,
-        existing.google_task_id,
-        { status: newCompleted ? 'completed' : 'needsAction' },
-      );
-    }
+    // Update Google Tasks + Supabase in parallel
+    const googleUpdate = (googleTaskId && googleListId)
+      ? updateGoogleTask(
+          req.userId!,
+          googleListId,
+          googleTaskId,
+          { status: newCompleted ? 'completed' : 'needsAction' },
+        )
+      : Promise.resolve(null);
 
-    // Update Supabase
-    const { data: reminder, error } = await supabaseAdmin
+    const supabaseUpdate = supabaseAdmin
       .from('reminders')
       .update({
         is_completed: newCompleted,
@@ -382,6 +410,8 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
       .eq('user_id', req.userId)
       .select()
       .single();
+
+    const [, { data: reminder, error }] = await Promise.all([googleUpdate, supabaseUpdate]);
 
     if (error) {
       res.status(500).json({ error: 'Failed to update reminder' });

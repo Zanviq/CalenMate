@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   ListTodo,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import api from '@/lib/api';
 import type { Reminder } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -66,42 +67,56 @@ export default function RemindersPage() {
   });
 
   const toggleCompleteMutation = useMutation({
-    mutationFn: (id: string) => api.patch(`/api/reminders/${id}/complete`),
-    onMutate: async (id) => {
+    mutationFn: (reminder: Reminder) => api.patch(`/api/reminders/${reminder.id}/complete`, {
+      google_task_id: reminder.google_task_id,
+      google_list_id: reminder.google_list_id,
+      is_completed: reminder.is_completed,
+    }),
+    onMutate: async (reminder) => {
       await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
       queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId], (old) =>
         old?.map((r) =>
-          r.id === id ? { ...r, is_completed: !r.is_completed } : r
+          r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
         )
       );
       return { previous };
     },
-    onError: (_err, _id, ctx) => {
+    onError: (_err, _reminder, ctx) => {
       if (ctx?.previous) {
         queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
+      toast.error('리마인더 상태 변경에 실패했습니다');
     },
-    // No onSettled invalidation — optimistic update is sufficient, avoids UI flicker
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/api/reminders/${id}`),
-    onMutate: async (id) => {
+    mutationFn: (reminder: Reminder) => api.delete(`/api/reminders/${reminder.id}`, {
+      params: {
+        google_task_id: reminder.google_task_id,
+        google_list_id: reminder.google_list_id,
+      },
+    }),
+    onMutate: async (reminder) => {
       await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
       queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId], (old) =>
-        old?.filter((r) => r.id !== id)
+        old?.filter((r) => r.id !== reminder.id)
       );
       return { previous };
     },
-    onError: (_err, _id, ctx) => {
+    onError: (_err, _reminder, ctx) => {
       if (ctx?.previous) {
         queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
+      toast.error('리마인더 삭제에 실패했습니다');
     },
-    onSuccess: () => {
+    onSettled: () => {
       setDeleteTarget(null);
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
     },
   });
 
@@ -113,17 +128,17 @@ export default function RemindersPage() {
     return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
   });
 
-  const handleToggleComplete = (e: React.MouseEvent, id: string) => {
+  const handleToggleComplete = (e: React.MouseEvent, reminder: Reminder) => {
     e.stopPropagation();
-    toggleCompleteMutation.mutate(id);
+    toggleCompleteMutation.mutate(reminder);
   };
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
+  const handleDelete = (e: React.MouseEvent, reminder: Reminder) => {
     e.stopPropagation();
-    if (deleteTarget === id) {
-      deleteMutation.mutate(id);
+    if (deleteTarget === reminder.id) {
+      deleteMutation.mutate(reminder);
     } else {
-      setDeleteTarget(id);
+      setDeleteTarget(reminder.id);
       setTimeout(() => setDeleteTarget(null), 3000);
     }
   };
@@ -190,7 +205,7 @@ export default function RemindersPage() {
                 onClick={() => router.push(`/reminders/${reminder.id}`)}
               >
                 {/* Checkbox */}
-                <div onClick={(e) => handleToggleComplete(e, reminder.id)}>
+                <div onClick={(e) => handleToggleComplete(e, reminder)}>
                   <Checkbox
                     checked={reminder.is_completed}
                     onCheckedChange={() => {}}
@@ -246,7 +261,7 @@ export default function RemindersPage() {
                   variant="ghost"
                   size="icon-xs"
                   className="shrink-0 text-zinc-400 hover:text-destructive"
-                  onClick={(e) => handleDelete(e, reminder.id)}
+                  onClick={(e) => handleDelete(e, reminder)}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

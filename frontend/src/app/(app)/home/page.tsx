@@ -19,6 +19,8 @@ import {
   X,
   Check,
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -84,6 +86,33 @@ export default function HomePage() {
     queryFn: async () => {
       const { data } = await api.get('/api/instructions');
       return data;
+    },
+  });
+
+  const toggleCompleteMutation = useMutation({
+    mutationFn: (reminder: Reminder) => api.patch(`/api/reminders/${reminder.id}/complete`, {
+      google_task_id: reminder.google_task_id,
+      google_list_id: reminder.google_list_id,
+      is_completed: reminder.is_completed,
+    }),
+    onMutate: async (reminder) => {
+      await queryClient.cancelQueries({ queryKey: ['reminders'] });
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders']);
+      queryClient.setQueryData<Reminder[]>(['reminders'], (old) =>
+        old?.map((r) =>
+          r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
+        )
+      );
+      return { previous };
+    },
+    onError: (_err, _reminder, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(['reminders'], ctx.previous);
+      }
+      toast.error('리마인더 상태 변경에 실패했습니다');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
     },
   });
 
@@ -168,7 +197,9 @@ export default function HomePage() {
               요약 생성 중...
             </div>
           ) : summary?.summary ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{summary.summary}</p>
+            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-headings:mb-2 prose-headings:mt-3">
+              <ReactMarkdown>{summary.summary}</ReactMarkdown>
+            </div>
           ) : (
             <p className="text-sm text-zinc-400">
               오른쪽 채팅창에서 &ldquo;오늘 일정 알려줘&rdquo;라고 말해보세요.
@@ -262,11 +293,20 @@ export default function HomePage() {
                 {activeReminders.map((reminder) => (
                   <div
                     key={reminder.id}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg border p-2 transition-colors hover:bg-muted/50"
-                    onClick={() => router.push(`/reminders/${reminder.id}`)}
+                    className="flex items-center gap-2 rounded-lg border p-2 transition-colors hover:bg-muted/50"
                   >
-                    <Checkbox checked={false} />
-                    <div className="min-w-0 flex-1">
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCompleteMutation.mutate(reminder);
+                      }}
+                    >
+                      <Checkbox checked={reminder.is_completed} onCheckedChange={() => {}} />
+                    </div>
+                    <div
+                      className="min-w-0 flex-1 cursor-pointer"
+                      onClick={() => router.push(`/reminders/${reminder.id}`)}
+                    >
                       <p className="truncate text-sm">{reminder.title}</p>
                     </div>
                     <Badge

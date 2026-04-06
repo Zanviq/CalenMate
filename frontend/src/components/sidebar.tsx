@@ -47,12 +47,12 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex h-full w-16 flex-col items-center bg-zinc-900 py-4 text-zinc-400">
-      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-800 text-sm font-bold text-white">
+    <aside className="flex h-full w-16 flex-col items-center border-r border-zinc-200 bg-zinc-50 py-4 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-200 text-sm font-bold text-zinc-800 dark:bg-zinc-800 dark:text-white">
         CM
       </div>
 
-      <Separator className="mx-auto mb-4 w-8 bg-zinc-700" />
+      <Separator className="mx-auto mb-4 w-8 bg-zinc-200 dark:bg-zinc-700" />
 
       <nav className="flex flex-1 flex-col items-center gap-2">
         <TooltipProvider>
@@ -66,8 +66,8 @@ export function Sidebar() {
                       href={href}
                       className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
                         isActive
-                          ? 'bg-zinc-700 text-white'
-                          : 'hover:bg-zinc-800 hover:text-zinc-200'
+                          ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-white'
+                          : 'hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200'
                       }`}
                     />
                   }
@@ -81,15 +81,15 @@ export function Sidebar() {
         </TooltipProvider>
       </nav>
 
-      <Separator className="mx-auto mb-4 w-8 bg-zinc-700" />
+      <Separator className="mx-auto mb-4 w-8 bg-zinc-200 dark:bg-zinc-700" />
 
       <DropdownMenu>
         <DropdownMenuTrigger
-          render={<button className="flex h-10 w-10 items-center justify-center rounded-xl transition-colors hover:bg-zinc-800" />}
+          render={<button className="flex h-10 w-10 items-center justify-center rounded-xl transition-colors hover:bg-zinc-200 dark:hover:bg-zinc-800" />}
         >
             <Avatar className="h-8 w-8">
               {user?.avatar_url && <AvatarImage src={user.avatar_url} alt={user.display_name} />}
-              <AvatarFallback className="bg-zinc-700 text-xs text-zinc-300">
+              <AvatarFallback className="bg-zinc-200 text-xs text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
                 {initials}
               </AvatarFallback>
             </Avatar>

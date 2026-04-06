@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { supabaseAdmin } from '../services/supabase';
+import { generateReminderNote } from '../services/gemini';
 
 const router = Router();
 
@@ -85,6 +86,52 @@ router.post('/:id/notes', async (req: AuthRequest, res: Response) => {
     res.json(note);
   } catch {
     res.status(500).json({ error: 'Failed to save note' });
+  }
+});
+
+// POST /:id/notes/generate - AI-generate note for a reminder
+router.post('/:id/notes/generate', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch reminder
+    const { data: reminder, error: reminderError } = await supabaseAdmin
+      .from('reminders')
+      .select('id, title, description, due_date, priority')
+      .eq('id', id)
+      .eq('user_id', req.userId)
+      .single();
+
+    if (reminderError || !reminder) {
+      res.status(404).json({ error: 'Reminder not found' });
+      return;
+    }
+
+    const content = await generateReminderNote(reminder);
+
+    // Save as note (upsert)
+    const { data: note, error } = await supabaseAdmin
+      .from('reminder_notes')
+      .upsert(
+        {
+          reminder_id: id,
+          user_id: req.userId,
+          content,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'reminder_id,user_id' }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: 'Failed to save generated note' });
+      return;
+    }
+
+    res.json(note);
+  } catch {
+    res.status(500).json({ error: 'Failed to generate note' });
   }
 });
 

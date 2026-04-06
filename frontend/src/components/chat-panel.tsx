@@ -20,6 +20,7 @@ import {
   Flag,
   CalendarDays,
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -291,13 +292,21 @@ const MessageBubble = memo(function MessageBubble({ msg }: { msg: ChatMessage })
       </div>
       <div className={`max-w-[85%] ${isUser ? 'text-right' : ''}`}>
         <div
-          className={`rounded-xl px-3 py-2 text-sm whitespace-pre-wrap ${
+          className={`rounded-xl px-3 py-2 text-sm ${
             isUser
-              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+              ? 'whitespace-pre-wrap bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
               : 'bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200'
           }`}
         >
-          {msg.content}
+          {isUser ? msg.content : (
+            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-0.5 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:mb-1 prose-headings:mt-2 prose-headings:text-sm">
+              <ReactMarkdown components={{
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+                ),
+              }}>{msg.content}</ReactMarkdown>
+            </div>
+          )}
         </div>
         {!isUser && msg.metadata && <ActionBadges metadata={msg.metadata} />}
       </div>

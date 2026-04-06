@@ -14,6 +14,7 @@ import taskListRoutes from './routes/task-lists';
 import chatRoutes from './routes/chat';
 import summaryRoutes from './routes/summary';
 import instructionRoutes from './routes/instructions';
+import settingsRoutes from './routes/settings';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -40,6 +41,7 @@ app.use('/api/task-lists', taskListRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/summary', summaryRoutes);
 app.use('/api/instructions', instructionRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

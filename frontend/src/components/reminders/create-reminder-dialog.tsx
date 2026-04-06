@@ -72,10 +72,20 @@ export function CreateReminderDialog({
   const createMutation = useMutation({
     mutationFn: (data: CreateReminderForm) =>
       api.post('/api/reminders', { ...data, list_id: listId || '@default' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    onMutate: (data) => {
+      // Close dialog immediately for snappy UX
+      const savedData = { ...data };
       reset();
       onOpenChange(false);
+      return { savedData };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+    },
+    onError: (_err, _data, ctx) => {
+      // Reopen dialog with previous data so user can retry
+      if (ctx?.savedData) reset(ctx.savedData);
+      onOpenChange(true);
     },
   });
 

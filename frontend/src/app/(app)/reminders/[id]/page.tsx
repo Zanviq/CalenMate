@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
-import { ArrowLeft, Save, Loader2, List } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, List, Trash2, CheckCircle2, Circle, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { CalendarIcon } from 'lucide-react';
@@ -19,6 +20,17 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import {
   Select,
   SelectContent,
@@ -138,16 +150,71 @@ export default function ReminderDetailPage() {
 
   // Save reminder mutation
   const saveMutation = useMutation({
-    mutationFn: (data: ReminderForm) => api.put(`/api/reminders/${id}`, data),
+    mutationFn: (data: ReminderForm) => api.put(`/api/reminders/${id}`, {
+      ...data,
+      google_task_id: reminder?.google_task_id,
+      google_list_id: reminder?.google_list_id,
+    }),
+    onSuccess: (res) => {
+      // Update cache in-place instead of full refetch
+      queryClient.setQueryData(['reminders', id], res.data);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+    },
+  });
+
+  // Toggle completion
+  const toggleCompleteMutation = useMutation({
+    mutationFn: () => api.patch(`/api/reminders/${id}/complete`, {
+      google_task_id: reminder?.google_task_id,
+      google_list_id: reminder?.google_list_id,
+      is_completed: reminder?.is_completed,
+    }),
+    onSuccess: (res) => {
+      queryClient.setQueryData(['reminders', id], res.data);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+    },
+    onError: () => {
+      toast.error('상태 변경에 실패했습니다');
+    },
+  });
+
+  // Delete reminder
+  const deleteMutation = useMutation({
+    mutationFn: () => api.delete(`/api/reminders/${id}`, {
+      params: {
+        google_task_id: reminder?.google_task_id,
+        google_list_id: reminder?.google_list_id,
+      },
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
-      queryClient.invalidateQueries({ queryKey: ['reminders', id] });
+      router.push('/reminders');
+    },
+    onError: () => {
+      toast.error('리마인더 삭제에 실패했습니다');
     },
   });
 
   const onSubmitReminder = (data: ReminderForm) => {
     saveMutation.mutate(data);
   };
+
+  // AI generate note
+  const generateNoteMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.post(`/api/reminders/${id}/notes/generate`);
+      return res.data;
+    },
+    onSuccess: (data) => {
+      setNoteContent(data.content ?? '');
+      queryClient.invalidateQueries({ queryKey: ['reminders', id, 'notes'] });
+      toast.success('AI 노트가 생성되었습니다');
+      setActiveTab('notes');
+    },
+    onError: () => {
+      toast.error('AI 노트 생성에 ��패했습니다');
+    },
+  });
 
   // Save notes
   const handleSaveNotes = async () => {
@@ -199,6 +266,52 @@ export default function ReminderDetailPage() {
             {taskLists.find((l) => l.id === reminder.google_list_id)?.title || '기본 목록'}
           </span>
         )}
+        <div className="flex items-center gap-1">
+          <Button
+            variant={reminder.is_completed ? 'default' : 'outline'}
+            size="sm"
+            className="gap-1.5"
+            onClick={() => toggleCompleteMutation.mutate()}
+            disabled={toggleCompleteMutation.isPending}
+          >
+            {reminder.is_completed ? (
+              <CheckCircle2 className="h-4 w-4" />
+            ) : (
+              <Circle className="h-4 w-4" />
+            )}
+            {reminder.is_completed ? '완료됨' : '완료'}
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-zinc-400 hover:text-destructive"
+                />
+              }
+            >
+              <Trash2 className="h-4 w-4" />
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>리마인더 삭제</AlertDialogTitle>
+                <AlertDialogDescription>
+                  &ldquo;{reminder.title}&rdquo;을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>취소</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => deleteMutation.mutate()}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  삭제
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -388,21 +501,37 @@ export default function ReminderDetailPage() {
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b px-6 py-3">
               <p className="text-sm text-muted-foreground">
-                리마인더에 대한 메모를 자유롭게 작성하세요.
+                리마인더에 대한 메모를 자유롭��� 작성하세요.
               </p>
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={handleSaveNotes}
-                disabled={noteSaving}
-              >
-                {noteSaving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Save className="h-3.5 w-3.5" />
-                )}
-                저장
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => generateNoteMutation.mutate()}
+                  disabled={generateNoteMutation.isPending}
+                >
+                  {generateNoteMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  AI 생성
+                </Button>
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={handleSaveNotes}
+                  disabled={noteSaving}
+                >
+                  {noteSaving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" />
+                  )}
+                  저장
+                </Button>
+              </div>
             </div>
             <div className="flex-1 overflow-hidden p-6" data-color-mode="light">
               {notesLoading ? (
