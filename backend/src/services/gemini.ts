@@ -11,10 +11,11 @@ interface ParseOptions {
   chatHistory?: { role: string; content: string }[];
   userInstructions?: { id: string; content: string }[];
   calendarError?: string | null;
+  eventsLabel?: string;
 }
 
 export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> {
-  const { content, context, existingEvents, existingReminders, chatHistory, userInstructions, calendarError } = opts;
+  const { content, context, existingEvents, existingReminders, chatHistory, userInstructions, calendarError, eventsLabel } = opts;
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
     generationConfig: {
@@ -27,16 +28,17 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
     : '';
 
   const historyBlock = chatHistory && chatHistory.length > 0
-    ? `\n== 최근 대화 기록 (참고용, 이미 처리 완료된 과거 대화) ==\n${chatHistory.map((m) => `${m.role === 'user' ? '사용자' : 'AI'}: ${m.content}`).join('\n')}\n`
+    ? `\n== 최근 대화 기록 ==\n${chatHistory.map((m) => `${m.role === 'user' ? '사용자' : 'AI'}: ${m.content}`).join('\n')}\n`
     : '';
 
+  const eventsRangeLabel = eventsLabel || '오늘~향후 7일';
   let eventsBlock: string;
   if (calendarError) {
     eventsBlock = `\n== 현재 등록된 일정 ==\n캘린더 조회 실패: ${calendarError}\n사용자에게 이 오류를 알려줘라.\n`;
   } else if (existingEvents && existingEvents.length > 0) {
-    eventsBlock = `\n== 현재 등록된 일정 (향후 30일) ==\n${JSON.stringify(existingEvents)}\n`;
+    eventsBlock = `\n== 현재 등록된 일정 (${eventsRangeLabel}) ==\n${JSON.stringify(existingEvents)}\n`;
   } else {
-    eventsBlock = '\n== 현재 등록된 일정 ==\n없음\n';
+    eventsBlock = `\n== 현재 등록된 일정 (${eventsRangeLabel}) ==\n없음\n`;
   }
 
   const remindersBlock = existingReminders && existingReminders.length > 0
@@ -51,7 +53,8 @@ ${instructionsBlock}${historyBlock}${eventsBlock}${remindersBlock}
 Respond ONLY with valid JSON:
 {
   "actions": [{ "type": "...", "data": {...} }],
-  "response": "Korean response to user"
+  "response": "Korean response to user",
+  "requiresConfirmation": false
 }
 
 ## Your capabilities
@@ -79,6 +82,14 @@ Respond ONLY with valid JSON:
 - 리마인더는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
 - For update/delete/complete: data needs id (Supabase UUID)
 
+#### 과거/특정 기간 일정 조회: query_events
+- 기본 제공되는 일정 데이터는 오늘~향후 7일뿐이다. 사용자가 이 범위 밖의 일정을 물어보면 반드시 query_events 액션을 사용하라.
+- data: { "timeMin": "YYYY-MM-DD", "timeMax": "YYYY-MM-DD" }
+- 예: "저번달 일정" → timeMin: 저번달 1일, timeMax: 저번달 말일
+- 예: "작년 12월에 뭐 했지?" → timeMin: "2025-12-01", timeMax: "2025-12-31"
+- query_events를 사용할 때는 response에 "일정을 조회하고 있습니다..."와 같은 임시 응답을 넣어라. 조회 결과를 바탕으로 최종 응답이 자동 생성된다.
+- query_events와 다른 액션(create, update 등)을 동시에 사용하지 마라. query_events는 단독으로 사용하라.
+
 #### Instructions (주요 지시사항): save_instruction, delete_instruction
 - save_instruction: when user explicitly asks to save a rule/instruction for future use (e.g. "이걸 주요 지시사항에 저장해줘")
   - data: { "content": "the instruction text" }
@@ -86,16 +97,18 @@ Respond ONLY with valid JSON:
   - data: { "id": "instruction_id" }
 
 ## CRITICAL RULES
-1. **현재 메시지만 처리하라.** 대화 기록은 맥락 파악용일 뿐이다. 과거에 이미 처리된 요청을 절대 다시 실행하지 마라. 오직 아래 "현재 사용자 메시지"에 대해서만 actions를 생성하라.
+1. **대화 기록을 적극 활용하여 맥락을 파악하라.** 사용자가 "그거", "아까 그 일정", "거기" 등 이전 대화를 참조하면 대화 기록에서 해당 대상을 찾아 처리하라. 단, 과거에 이미 실행 완료된 동일한 액션을 중복 실행하지 마라. actions는 현재 메시지의 의도에 대해서만 생성하라.
 2. 주요 지시사항이 있으면 모든 작업에 우선 적용하라.
 3. 사용자가 일정 제목(이름) 또는 시간을 제공하지 않으면 반드시 물어봐라. 절대 추측하지 마라.
 4. 복합 명령을 지원하라 (여러 액션 동시 가능).
-5. 사용자가 일정/리마인더 조회를 요청하면 "현재 등록된 일정" 데이터를 기반으로 답변하라. 이 데이터는 Google Calendar에서 실시간으로 가져온 것이다.
-6. Always respond in Korean.`;
+5. 기본 제공 일정 데이터(오늘~7일)로 답변 가능하면 바로 답변하라. 범위 밖의 일정이 필요하면 query_events 액션을 사용하라.
+6. Always respond in Korean.
+7. **여러 건을 삭제하거나 대량 수정하는 경우** requiresConfirmation을 true로 설정하라. 이 경우 response에 수행할 작업 내용을 요약하라 (예: "4개 일정을 삭제합니다"). 단건 작업은 requiresConfirmation: false로 바로 실행하라.
+8. 사용자에게 텍스트로 재확인을 묻지 마라. 확인이 필요하면 반드시 requiresConfirmation: true를 사용하라.`;
 
   const result = await model.generateContent([
     { text: systemPrompt },
-    { text: `== 현재 사용자 메시지 (이것만 처리하라) ==\n${content}` },
+    { text: `== 현재 사용자 메시지 ==\n${content}` },
   ]);
 
   const responseText = result.response.text();

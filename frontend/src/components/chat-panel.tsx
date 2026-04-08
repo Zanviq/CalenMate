@@ -260,6 +260,72 @@ const ActionBadges = memo(function ActionBadges({ metadata }: { metadata: Record
   );
 });
 
+function ConfirmationBox({ messageId, metadata }: { messageId: string; metadata: Record<string, unknown> }) {
+  const { confirmActions, cancelActions } = useChatStore();
+  const status = metadata?.confirmationStatus as string | undefined;
+
+  if (status === 'confirmed') {
+    return (
+      <div className="mt-2">
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] text-green-600 dark:text-green-400">
+          <CheckCircle2 className="h-3 w-3" />
+          <span>확인됨</span>
+        </div>
+        <ActionBadges metadata={metadata} />
+      </div>
+    );
+  }
+
+  if (status === 'cancelled') {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-400">
+        <XCircle className="h-3 w-3" />
+        <span>취소됨</span>
+      </div>
+    );
+  }
+
+  if (status === 'error') {
+    const errorMsg = metadata?.confirmationError as string | undefined;
+    return (
+      <div className="mt-2 flex items-center gap-1.5 rounded-md bg-red-100 px-2 py-1 text-[11px] text-red-700 dark:bg-red-950 dark:text-red-400">
+        <XCircle className="h-3 w-3 shrink-0" />
+        <span>실행 실패: {errorMsg || '알 수 없는 오류'}</span>
+      </div>
+    );
+  }
+
+  const isExecuting = status === 'executing';
+
+  return (
+    <div className="mt-2 flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900">
+      <span className="flex-1 text-xs text-zinc-600 dark:text-zinc-300">확인하시겠습니까?</span>
+      {isExecuting ? (
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600" />
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => confirmActions(messageId)}
+            className="flex items-center gap-1 rounded-md bg-green-500 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-green-600"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            확인
+          </button>
+          <button
+            type="button"
+            onClick={() => cancelActions(messageId)}
+            className="flex items-center gap-1 rounded-md bg-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            취소
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 const MessageBubble = memo(function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user';
   const isCommand = msg.metadata?.isCommand === true;
@@ -308,11 +374,18 @@ const MessageBubble = memo(function MessageBubble({ msg }: { msg: ChatMessage })
             </div>
           )}
         </div>
-        {!isUser && msg.metadata && <ActionBadges metadata={msg.metadata} />}
+        {!isUser && msg.metadata && hasPendingActions(msg.metadata) && (
+          <ConfirmationBox messageId={msg.id} metadata={msg.metadata} />
+        )}
+        {!isUser && msg.metadata && !hasPendingActions(msg.metadata) && <ActionBadges metadata={msg.metadata} />}
       </div>
     </div>
   );
 });
+
+function hasPendingActions(metadata: Record<string, unknown>): boolean {
+  return Array.isArray(metadata?.pendingActions) && (metadata.pendingActions as unknown[]).length > 0;
+}
 
 export function ChatPanel() {
   const {

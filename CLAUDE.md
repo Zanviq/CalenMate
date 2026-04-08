@@ -95,4 +95,4 @@ cd backend && npm run build     # tsc → dist/
 - Frontend imports use `@/` path alias
 - AI responses and UI are in Korean
 - **IMPORTANT**: This project uses Next.js 16 which has breaking changes from earlier versions. Read `node_modules/next/dist/docs/` and `frontend/AGENTS.md` before writing Next.js code.
-- Backend TypeScript targets ES2020 with CommonJS modules; frontend targets ESNext with ESNext modules
+- Backend TypeScript targets ES2020 with CommonJS modules; frontend targets ES2017 with ESNext modules (bundler resolution)

@@ -40,6 +40,8 @@ interface ChatState {
   setLoading: (loading: boolean) => void;
   clearMessages: () => void;
   sendMessage: (content: string) => Promise<SendMessageResult | null>;
+  confirmActions: (messageId: string) => Promise<void>;
+  cancelActions: (messageId: string) => void;
   loadHistory: () => Promise<void>;
   loadOlderMessages: () => Promise<void>;
 }
@@ -171,6 +173,80 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ isLoading: false, error: errorMessage });
       return null;
     }
+  },
+
+  confirmActions: async (messageId: string) => {
+    const { context } = get();
+    const messages = get().messagesByContext[context];
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return;
+
+    const pendingActions = msg.metadata?.pendingActions as AIAction[] | undefined;
+    if (!pendingActions?.length) return;
+
+    // Update UI to show loading state
+    const updateMessage = (updates: Record<string, unknown>) => {
+      set((state) => ({
+        messagesByContext: {
+          ...state.messagesByContext,
+          [context]: state.messagesByContext[context].map((m) =>
+            m.id === messageId
+              ? { ...m, metadata: { ...m.metadata, ...updates } }
+              : m
+          ),
+        },
+      }));
+    };
+
+    updateMessage({ confirmationStatus: 'executing' });
+
+    try {
+      const { data } = await api.post<{
+        results: { type: string; data: Record<string, unknown> }[];
+      }>('/api/chat/execute', { actions: pendingActions, messageId });
+
+      updateMessage({
+        confirmationStatus: 'confirmed',
+        results: data.results,
+      });
+
+      // Increment action counters
+      const hasCalendarAction = pendingActions.some((a) =>
+        a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+      );
+      const hasReminderAction = pendingActions.some((a) =>
+        a.type === 'create_reminder' || a.type === 'update_reminder' || a.type === 'delete_reminder' || a.type === 'complete_reminder'
+      );
+      const hasInstructionAction = pendingActions.some((a) =>
+        a.type === 'save_instruction' || a.type === 'delete_instruction'
+      );
+
+      set((state) => ({
+        ...(hasCalendarAction && { calendarActionCount: state.calendarActionCount + 1 }),
+        ...(hasReminderAction && { reminderActionCount: state.reminderActionCount + 1 }),
+        ...(hasInstructionAction && { instructionActionCount: state.instructionActionCount + 1 }),
+      }));
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string } }; message?: string };
+      updateMessage({
+        confirmationStatus: 'error',
+        confirmationError: axiosErr.response?.data?.error || axiosErr.message || '실행 실패',
+      });
+    }
+  },
+
+  cancelActions: (messageId: string) => {
+    const { context } = get();
+    set((state) => ({
+      messagesByContext: {
+        ...state.messagesByContext,
+        [context]: state.messagesByContext[context].map((m) =>
+          m.id === messageId
+            ? { ...m, metadata: { ...m.metadata, confirmationStatus: 'cancelled' } }
+            : m
+        ),
+      },
+    }));
   },
 
   loadHistory: async () => {

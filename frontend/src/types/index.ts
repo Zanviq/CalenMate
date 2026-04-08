@@ -71,11 +71,13 @@ export interface AIAction {
   type:
     | 'create_event' | 'update_event' | 'delete_event'
     | 'create_reminder' | 'update_reminder' | 'delete_reminder' | 'complete_reminder'
-    | 'save_instruction' | 'delete_instruction';
+    | 'save_instruction' | 'delete_instruction'
+    | 'query_events';
   data: Record<string, unknown>;
 }
 
 export interface AIResponse {
   actions: AIAction[];
   response: string;
+  requiresConfirmation?: boolean;
 }

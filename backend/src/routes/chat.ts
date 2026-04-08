@@ -305,7 +305,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           .eq('user_id', req.userId)
           .eq('context', context)
           .order('created_at', { ascending: false })
-          .limit(20), // 20 messages (not 40 — we only need recent context)
+          .limit(40),
 
         // 2. User instructions
         supabaseAdmin
@@ -320,11 +320,11 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
             const { calendar } = await getCalendarClient(req.userId!);
             const now = new Date();
             const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            const monthLater = new Date(startOfToday.getTime() + 30 * 24 * 60 * 60 * 1000);
+            const weekLater = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
             const eventsResponse = await calendar.events.list({
               calendarId: 'primary',
               timeMin: startOfToday.toISOString(),
-              timeMax: monthLater.toISOString(),
+              timeMax: weekLater.toISOString(),
               singleEvents: true,
               orderBy: 'startTime',
               maxResults: 50,
@@ -382,7 +382,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     }));
 
     // Parse message with Gemini
-    const aiResponse = await parseUserMessage({
+    let aiResponse = await parseUserMessage({
       content: userMessage,
       context,
       existingEvents,
@@ -391,6 +391,93 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       userInstructions,
       calendarError,
     });
+
+    // Handle query_events: fetch requested range, then re-call AI with full context
+    const queryAction = aiResponse.actions.find((a) => a.type === 'query_events');
+    if (queryAction) {
+      try {
+        const { timeMin, timeMax } = queryAction.data as { timeMin: string; timeMax: string };
+        const { calendar } = await getCalendarClient(req.userId!);
+        const eventsResponse = await calendar.events.list({
+          calendarId: 'primary',
+          timeMin: new Date(timeMin).toISOString(),
+          timeMax: new Date(timeMax + 'T23:59:59').toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 100,
+        });
+        const queriedEvents = (eventsResponse.data.items || []).map((item) => {
+          const start = item.start as { dateTime?: string; date?: string } | undefined;
+          const end = item.end as { dateTime?: string; date?: string } | undefined;
+          return {
+            id: item.id,
+            title: item.summary || '(제목 없음)',
+            date: start?.dateTime?.slice(0, 10) || start?.date || '',
+            start_time: start?.dateTime?.slice(11, 16) || '',
+            end_time: end?.dateTime?.slice(11, 16) || '',
+            allDay: !start?.dateTime,
+            description: item.description || '',
+          };
+        });
+        // Re-call with queried events so AI can generate actions (delete, update, etc.)
+        aiResponse = await parseUserMessage({
+          content: userMessage,
+          context,
+          existingEvents: queriedEvents,
+          existingReminders,
+          chatHistory,
+          userInstructions,
+          calendarError: null,
+          eventsLabel: `${timeMin} ~ ${timeMax}`,
+        });
+        // Prevent recursive query_events
+        aiResponse.actions = aiResponse.actions.filter((a) => a.type !== 'query_events');
+      } catch (err) {
+        aiResponse = {
+          actions: [],
+          response: `일정 조회 중 오류가 발생했습니다: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
+        };
+      }
+    }
+
+    // If confirmation required, save actions as pending and return without executing
+    if (aiResponse.requiresConfirmation && aiResponse.actions.length > 0) {
+      const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
+        {
+          user_id: req.userId,
+          role: 'user',
+          content: userMessage,
+          context,
+          metadata: {},
+        },
+        {
+          user_id: req.userId,
+          role: 'assistant',
+          content: aiResponse.response,
+          context,
+          metadata: { pendingActions: aiResponse.actions, confirmationStatus: 'pending' },
+        },
+      ]).select();
+
+      const assistantMessage = savedMessages?.[1] ?? {
+        id: crypto.randomUUID(),
+        user_id: req.userId,
+        role: 'assistant',
+        content: aiResponse.response,
+        context,
+        metadata: { pendingActions: aiResponse.actions, confirmationStatus: 'pending' },
+        created_at: new Date().toISOString(),
+      };
+
+      res.json({
+        response: aiResponse.response,
+        actions: [],
+        results: [],
+        pendingActions: aiResponse.actions,
+        message: assistantMessage,
+      });
+      return;
+    }
 
     // Pre-fetch calendar client once for all action executions
     let calendarClient: calendar_v3.Calendar | undefined;
@@ -473,6 +560,79 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
   } catch (err) {
     console.error('Chat error:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to process message' });
+  }
+});
+
+// POST /execute - Execute confirmed pending actions (no AI re-call)
+const executeSchema = z.object({
+  actions: z.array(z.object({
+    type: z.string(),
+    data: z.record(z.string(), z.unknown()),
+  })),
+  messageId: z.string().uuid(),
+});
+
+router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const { actions, messageId } = req.body as { actions: AIAction[]; messageId: string };
+
+    // Pre-fetch clients
+    let calendarClient: calendar_v3.Calendar | undefined;
+    let tasksApiClient: tasks_v1.Tasks | undefined;
+    const hasCalendarActions = actions.some(
+      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+    );
+    const hasTaskActions = actions.some(
+      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder'].includes(a.type)
+    );
+    if (hasCalendarActions) {
+      try {
+        const { calendar } = await getCalendarClient(req.userId!);
+        calendarClient = calendar;
+      } catch { /* per-action fallback */ }
+    }
+    if (hasTaskActions) {
+      try {
+        tasksApiClient = await getTasksClient(req.userId!);
+      } catch { /* per-action fallback */ }
+    }
+
+    // Execute all actions
+    const actionResults = [];
+    for (const action of actions) {
+      try {
+        const result = await executeAction(action as AIAction, req.userId!, calendarClient, tasksApiClient);
+        actionResults.push(result);
+      } catch (err) {
+        actionResults.push({
+          type: `${action.type}_error`,
+          data: { error: err instanceof Error ? err.message : 'Action failed' },
+        });
+      }
+    }
+
+    // Update the original message metadata
+    await supabaseAdmin
+      .from('chat_messages')
+      .update({
+        metadata: {
+          pendingActions: actions,
+          confirmationStatus: 'confirmed',
+          results: actionResults,
+        },
+      })
+      .eq('id', messageId)
+      .eq('user_id', req.userId);
+
+    // Invalidate caches
+    if (hasCalendarActions || hasTaskActions) {
+      invalidateSummaryCache(req.userId!);
+    }
+
+    res.json({ results: actionResults });
+  } catch (err) {
+    console.error('Execute error:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to execute actions' });
   }
 });
 
