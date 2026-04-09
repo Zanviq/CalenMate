@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validate';
 import { supabaseAdmin } from '../services/supabase';
 import { parseUserMessage } from '../services/gemini';
 import { getCalendarClient } from '../services/google-calendar';
+import { isInvalidGrantError, handleInvalidGrant } from '../services/google-auth';
 import { invalidateSummaryCache } from './summary';
 import {
   getTasksClient,
@@ -315,7 +316,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           .order('created_at', { ascending: true }),
 
         // 3. Calendar events (with error handling)
-        (async (): Promise<{ events: calendar_v3.Schema$Event[]; error: string | null }> => {
+        (async (): Promise<{ events: calendar_v3.Schema$Event[]; error: string | null; isAuthError?: boolean }> => {
           try {
             const { calendar } = await getCalendarClient(req.userId!);
             const now = new Date();
@@ -331,6 +332,10 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
             });
             return { events: eventsResponse.data.items || [], error: null };
           } catch (err) {
+            if (isInvalidGrantError(err)) {
+              const msg = await handleInvalidGrant(req.userId!);
+              return { events: [], error: msg, isAuthError: true };
+            }
             return {
               events: [],
               error: err instanceof Error ? err.message : 'Google Calendar 연결 실패',
@@ -358,6 +363,30 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     const userInstructions = (instructionsResult.data || []) as { id: string; content: string }[];
 
     const calendarError = calendarResult.error;
+    const isAuthError = !!(calendarResult as { isAuthError?: boolean }).isAuthError;
+
+    // If Google auth is invalid, skip AI processing and return auth error directly
+    if (isAuthError && calendarError) {
+      const authErrorResponse = calendarError;
+      const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
+        { user_id: req.userId, role: 'user', content: userMessage, context, metadata: {} },
+        { user_id: req.userId, role: 'assistant', content: authErrorResponse, context, metadata: {} },
+      ]).select();
+
+      const assistantMessage = savedMessages?.[1] ?? {
+        id: crypto.randomUUID(),
+        user_id: req.userId,
+        role: 'assistant',
+        content: authErrorResponse,
+        context,
+        metadata: {},
+        created_at: new Date().toISOString(),
+      };
+
+      res.json({ response: authErrorResponse, actions: [], results: [], message: assistantMessage });
+      return;
+    }
+
     const existingEvents = calendarResult.events.map((item) => {
       const start = item.start as { dateTime?: string; date?: string } | undefined;
       const end = item.end as { dateTime?: string; date?: string } | undefined;
@@ -511,6 +540,15 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         const result = await executeAction(action, req.userId!, calendarClient, tasksApiClient);
         actionResults.push(result);
       } catch (err) {
+        if (isInvalidGrantError(err)) {
+          const msg = await handleInvalidGrant(req.userId!);
+          actionResults.push({
+            type: `${action.type}_error`,
+            data: { error: msg },
+          });
+          // Skip remaining actions — all will fail with same auth error
+          break;
+        }
         actionResults.push({
           type: `${action.type}_error`,
           data: { error: err instanceof Error ? err.message : 'Action failed' },

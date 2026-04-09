@@ -399,7 +399,8 @@ export function ChatPanel() {
     loadHistory,
     loadOlderMessages,
     addMessage,
-    clearMessages,
+    clearAllMessages,
+    replaceMessages,
   } = useChatStore();
   const messages = messagesByContext[context];
   const hasMore = hasMoreByContext[context];
@@ -468,10 +469,16 @@ export function ChatPanel() {
     if (text.startsWith('/')) {
       const result = await executeCommand(text, context);
       if (result) {
-        if (result.effects?.clearMessages) {
-          clearMessages();
+        if (result.effects?.clearAllMessages) {
+          clearAllMessages();
+          // Use replaceMessages to atomically set the system message,
+          // preventing loadHistory from overwriting it
+          replaceMessages([result.message]);
+        } else if (result.effects?.clearMessages) {
+          replaceMessages([result.message]);
+        } else {
+          addMessage(result.message);
         }
-        addMessage(result.message);
         return;
       }
     }

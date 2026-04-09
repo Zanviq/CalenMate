@@ -7,6 +7,7 @@ interface CommandResult {
   /** Side effects to trigger */
   effects?: {
     clearMessages?: boolean;
+    clearAllMessages?: boolean;
     refreshInstructions?: boolean;
   };
 }
@@ -111,7 +112,7 @@ export const commands: CommandDefinition[] = [
             '모든 대화 기억이 초기화되었습니다.',
             context,
           ),
-          effects: { clearMessages: true },
+          effects: { clearAllMessages: true },
         };
       } catch {
         return {

@@ -85,3 +85,31 @@ export async function getOAuth2Client(userId: string): Promise<OAuth2Client> {
 
   return oauth2Client;
 }
+
+/**
+ * Check if an error is an invalid_grant error (expired/revoked tokens).
+ * When detected, invalidates the auth cache so the next call creates a fresh client.
+ */
+export function isInvalidGrantError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message || '';
+  const code = (err as { code?: string }).code || '';
+  return message.includes('invalid_grant') || code === 'invalid_grant';
+}
+
+/**
+ * Invalidate cache and clear stored tokens when invalid_grant is detected.
+ * Returns a user-friendly error message.
+ */
+export async function handleInvalidGrant(userId: string): Promise<string> {
+  invalidateAuthCache(userId);
+  await supabaseAdmin
+    .from('profiles')
+    .update({
+      google_access_token: null,
+      google_refresh_token: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', userId);
+  return 'Google 인증이 만료되었습니다. 설정 페이지에서 다시 로그인해주세요.';
+}

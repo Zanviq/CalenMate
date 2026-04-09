@@ -39,6 +39,8 @@ interface ChatState {
   setMessages: (messages: ChatMessage[]) => void;
   setLoading: (loading: boolean) => void;
   clearMessages: () => void;
+  clearAllMessages: () => void;
+  replaceMessages: (messages: ChatMessage[]) => void;
   sendMessage: (content: string) => Promise<SendMessageResult | null>;
   confirmActions: (messageId: string) => Promise<void>;
   cancelActions: (messageId: string) => void;
@@ -95,6 +97,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messagesByContext: {
         ...state.messagesByContext,
         [state.context]: [],
+      },
+      hasMoreByContext: {
+        ...state.hasMoreByContext,
+        [state.context]: false,
+      },
+    })),
+
+  clearAllMessages: () =>
+    set({
+      messagesByContext: { home: [], calendar: [], reminder: [] },
+      hasMoreByContext: { home: false, calendar: false, reminder: false },
+    }),
+
+  replaceMessages: (messages: ChatMessage[]) =>
+    set((state) => ({
+      messagesByContext: {
+        ...state.messagesByContext,
+        [state.context]: messages,
       },
       hasMoreByContext: {
         ...state.hasMoreByContext,
