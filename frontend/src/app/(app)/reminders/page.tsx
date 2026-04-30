@@ -15,12 +15,15 @@ import {
   CircleDashed,
   ListTodo,
   Link as LinkIcon,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
-import type { Reminder, ReminderStatus } from '@/types';
+import type { ChecklistItem, Reminder, ReminderStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chat';
@@ -61,7 +64,17 @@ export default function RemindersPage() {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const deleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const toggleExpanded = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   useEffect(() => {
     setContext('reminder');
@@ -135,6 +148,57 @@ export default function RemindersPage() {
       );
     },
   });
+
+  // Inline checklist toggle from the list expansion. Sends only the new checklist
+  // array — Google Tasks is left untouched (PUT body without title/description/due).
+  const updateChecklistMutation = useMutation({
+    mutationFn: async ({ reminder, checklist }: { reminder: Reminder; checklist: ChecklistItem[] }) => {
+      const res = await api.put(`/api/reminders/${reminder.id}`, {
+        checklist,
+        google_task_id: reminder.google_task_id,
+        google_list_id: reminder.google_list_id,
+      });
+      return res.data as Reminder;
+    },
+    onMutate: async ({ reminder, checklist }) => {
+      await queryClient.cancelQueries({ queryKey: ['reminders'] });
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId, tagsKey]);
+      queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
+        Array.isArray(old)
+          ? old.map((r) => (r.id === reminder.id ? { ...r, checklist } : r))
+          : old,
+      );
+      // Also patch the detail cache if it's hydrated.
+      const detail = queryClient.getQueryData<Reminder>(['reminders', reminder.id]);
+      if (detail) {
+        queryClient.setQueryData<Reminder>(['reminders', reminder.id], { ...detail, checklist });
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(['reminders', filter, selectedListId, tagsKey], ctx.previous);
+      }
+      toast.error('체크리스트 저장에 실패했습니다');
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
+        Array.isArray(old)
+          ? old.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
+          : old,
+      );
+      queryClient.setQueryData(['reminders', updated.id], (prev: Reminder | undefined) =>
+        prev ? { ...prev, ...updated } : updated,
+      );
+    },
+  });
+
+  const toggleChecklistItem = (reminder: Reminder, itemId: string) => {
+    const next = (reminder.checklist ?? []).map((it) =>
+      it.id === itemId ? { ...it, done: !it.done } : it,
+    );
+    updateChecklistMutation.mutate({ reminder, checklist: next });
+  };
 
   const deleteMutation = useMutation({
     mutationFn: (reminder: Reminder) => api.delete(`/api/reminders/${reminder.id}`, {
@@ -286,115 +350,159 @@ export default function RemindersPage() {
           </div>
         ) : (
           <div className="divide-y">
-            {filtered.map((reminder) => (
-              <div
-                key={reminder.id}
-                className="flex cursor-pointer items-center gap-3 px-6 py-3 transition-colors hover:bg-muted/50"
-                onClick={() => router.push(`/reminders/${reminder.id}`)}
-              >
-                {/* Status toggle (3-state cycle) */}
-                <button
-                  type="button"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted"
-                  onClick={(e) => handleCycleStatus(e, reminder)}
-                  title={
-                    reminder.status === 'completed'
-                      ? '완료됨 (클릭하여 시작 안 함으로)'
-                      : reminder.status === 'in_progress'
-                        ? '진행 중 (클릭하여 완료로)'
-                        : '시작 안 함 (클릭하여 진행 중으로)'
-                  }
-                >
-                  <StatusIcon
-                    status={reminder.status ?? (reminder.is_completed ? 'completed' : 'not_started')}
-                  />
-                </button>
-
-                {/* Content */}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    {reminder.color && (
-                      <span
-                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: reminder.color }}
-                      />
-                    )}
-                    <span
-                      className={`truncate text-sm font-medium ${
-                        reminder.is_completed
-                          ? 'text-zinc-400 line-through'
+            {filtered.map((reminder) => {
+              const hasChecklist = !!reminder.checklist && reminder.checklist.length > 0;
+              const isExpanded = expandedIds.has(reminder.id);
+              return (
+                <div key={reminder.id}>
+                  <div
+                    className="flex cursor-pointer items-center gap-3 px-6 py-3 transition-colors hover:bg-muted/50"
+                    onClick={() => router.push(`/reminders/${reminder.id}`)}
+                  >
+                    {/* Status toggle (3-state cycle) */}
+                    <button
+                      type="button"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted"
+                      onClick={(e) => handleCycleStatus(e, reminder)}
+                      title={
+                        reminder.status === 'completed'
+                          ? '완료됨 (클릭하여 시작 안 함으로)'
                           : reminder.status === 'in_progress'
-                            ? 'text-foreground'
-                            : 'text-foreground'
-                      }`}
+                            ? '진행 중 (클릭하여 완료로)'
+                            : '시작 안 함 (클릭하여 진행 중으로)'
+                      }
                     >
-                      {reminder.title}
-                    </span>
-                    {reminder.linked_event_id && (
-                      <span
-                        className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"
-                        title="캘린더 일정과 연결됨"
-                      >
-                        <LinkIcon className="h-2.5 w-2.5" />
-                        링크
-                      </span>
+                      <StatusIcon
+                        status={reminder.status ?? (reminder.is_completed ? 'completed' : 'not_started')}
+                      />
+                    </button>
+
+                    {/* Content */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        {reminder.color && (
+                          <span
+                            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: reminder.color }}
+                          />
+                        )}
+                        <span
+                          className={`truncate text-sm font-medium ${
+                            reminder.is_completed
+                              ? 'text-zinc-400 line-through'
+                              : reminder.status === 'in_progress'
+                                ? 'text-foreground'
+                                : 'text-foreground'
+                          }`}
+                        >
+                          {reminder.title}
+                        </span>
+                        {reminder.linked_event_id && (
+                          <span
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"
+                            title="캘린더 일정과 연결됨"
+                          >
+                            <LinkIcon className="h-2.5 w-2.5" />
+                            링크
+                          </span>
+                        )}
+                        {hasChecklist && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleExpanded(reminder.id);
+                            }}
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70"
+                            title={isExpanded ? '체크리스트 접기' : '체크리스트 펼치기'}
+                          >
+                            {isExpanded ? (
+                              <ChevronUp className="h-2.5 w-2.5" />
+                            ) : (
+                              <ChevronDown className="h-2.5 w-2.5" />
+                            )}
+                            {reminder.checklist!.filter((c) => c.done).length}/{reminder.checklist!.length}
+                          </button>
+                        )}
+                        {reminder.tags && reminder.tags.length > 0 && reminder.tags.map((t) => (
+                          <span
+                            key={t}
+                            className="shrink-0 rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                          >
+                            #{t}
+                          </span>
+                        ))}
+                      </div>
+                      {reminder.due_date && (
+                        <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">
+                          <CalendarIcon className="h-3 w-3" />
+                          {format(new Date(reminder.due_date), 'M월 d일 (EEE)', {
+                            locale: ko,
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Priority badge */}
+                    <Badge variant={priorityConfig[reminder.priority].variant}>
+                      {priorityConfig[reminder.priority].label}
+                    </Badge>
+
+                    {/* Notify indicator */}
+                    {reminder.notify && (
+                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
                     )}
-                    {reminder.checklist && reminder.checklist.length > 0 && (
-                      <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {reminder.checklist.filter((c) => c.done).length}/{reminder.checklist.length}
-                      </span>
-                    )}
-                    {reminder.tags && reminder.tags.length > 0 && reminder.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="shrink-0 rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+
+                    {/* Delete */}
+                    {deleteTarget === reminder.id ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 text-xs font-medium text-destructive hover:bg-destructive/10"
+                        onClick={(e) => handleDeleteConfirm(e, reminder)}
                       >
-                        #{t}
-                      </span>
-                    ))}
+                        삭제 확인
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="shrink-0 text-zinc-400 hover:text-destructive"
+                        onClick={(e) => handleDeleteStart(e, reminder.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
-                  {reminder.due_date && (
-                    <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">
-                      <CalendarIcon className="h-3 w-3" />
-                      {format(new Date(reminder.due_date), 'M월 d일 (EEE)', {
-                        locale: ko,
-                      })}
+
+                  {/* Expanded checklist (read + toggleable) */}
+                  {isExpanded && hasChecklist && (
+                    <div
+                      className="space-y-1.5 bg-muted/30 px-6 pb-3 pl-[3.25rem] pt-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {[...reminder.checklist!]
+                        .sort((a, b) => a.order - b.order)
+                        .map((item) => (
+                          <div key={item.id} className="flex items-center gap-2">
+                            <Checkbox
+                              checked={item.done}
+                              onCheckedChange={() => toggleChecklistItem(reminder, item.id)}
+                            />
+                            <span
+                              className={`text-xs ${
+                                item.done ? 'text-muted-foreground line-through' : 'text-foreground'
+                              }`}
+                            >
+                              {item.text}
+                            </span>
+                          </div>
+                        ))}
                     </div>
                   )}
                 </div>
-
-                {/* Priority badge */}
-                <Badge variant={priorityConfig[reminder.priority].variant}>
-                  {priorityConfig[reminder.priority].label}
-                </Badge>
-
-                {/* Notify indicator */}
-                {reminder.notify && (
-                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                )}
-
-                {/* Delete */}
-                {deleteTarget === reminder.id ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="shrink-0 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    onClick={(e) => handleDeleteConfirm(e, reminder)}
-                  >
-                    삭제 확인
-                  </Button>
-                ) : (
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    className="shrink-0 text-zinc-400 hover:text-destructive"
-                    onClick={(e) => handleDeleteStart(e, reminder.id)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </ScrollArea>

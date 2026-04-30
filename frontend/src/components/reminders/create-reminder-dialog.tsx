@@ -16,6 +16,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { TagEditor } from './tag-editor';
+import { ChecklistEditor } from './checklist-editor';
+import type { ChecklistItem } from '@/types';
 import {
   Select,
   SelectContent,
@@ -62,6 +64,7 @@ export function CreateReminderDialog({
 }: CreateReminderDialogProps) {
   const queryClient = useQueryClient();
   const [tags, setTags] = useState<string[]>([]);
+  const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
 
   const {
     register,
@@ -91,12 +94,18 @@ export function CreateReminderDialog({
 
   const createMutation = useMutation({
     mutationFn: (data: CreateReminderForm) =>
-      api.post('/api/reminders', { ...data, tags, list_id: listId || '@default' }),
+      api.post('/api/reminders', {
+        ...data,
+        tags,
+        checklist,
+        list_id: listId || '@default',
+      }),
     onMutate: (data) => {
       // Close dialog immediately for snappy UX
-      const savedData = { ...data, tags };
+      const savedData = { ...data, tags, checklist };
       reset();
       setTags([]);
+      setChecklist([]);
       onOpenChange(false);
       return { savedData };
     },
@@ -107,9 +116,10 @@ export function CreateReminderDialog({
     onError: (_err, _data, ctx) => {
       // Reopen dialog with previous data so user can retry
       if (ctx?.savedData) {
-        const { tags: savedTags, ...formData } = ctx.savedData;
+        const { tags: savedTags, checklist: savedChecklist, ...formData } = ctx.savedData;
         reset(formData);
         setTags(savedTags);
+        setChecklist(savedChecklist);
       }
       onOpenChange(true);
     },
@@ -210,6 +220,9 @@ export function CreateReminderDialog({
             suggestions={tagSuggestions.map((t) => t.name)}
             onChange={setTags}
           />
+
+          {/* Checklist */}
+          <ChecklistEditor items={checklist} onChange={setChecklist} />
 
           {/* Notify */}
           <div className="flex items-center gap-2">
