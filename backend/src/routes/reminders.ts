@@ -7,12 +7,15 @@ import { supabaseAdmin } from '../services/supabase';
 import {
   getTasks,
   getTask as getGoogleTask,
+  getTaskLists,
   createGoogleTask,
   updateGoogleTask,
   deleteGoogleTask,
 } from '../services/google-tasks';
+import type { tasks_v1 } from 'googleapis';
 import { getCalendarClient } from '../services/google-calendar';
 import { ReminderStatus, ChecklistItem, LinkedEventInfo } from '../types';
+import { invalidateSummaryCache } from './summary';
 
 const router = Router();
 
@@ -196,9 +199,14 @@ function computeAutoTransition(
 }
 
 // GET / - List reminders (merged from Google Tasks + Supabase metadata)
+// listId semantics:
+//   undefined or 'all' → aggregate across every Google Tasks list (used by Home, AI summary)
+//   '@default' or specific id → single-list view (used by /reminders page)
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const listId = (req.query.listId as string) || '@default';
+    const rawListId = req.query.listId as string | undefined;
+    const aggregateAll = !rawListId || rawListId === 'all';
+    const listId = aggregateAll ? '@default' : rawListId;
     const { status } = req.query;
     const showCompleted = status !== 'active';
 
@@ -208,14 +216,37 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       ? tagsParam.split(',').map((t) => t.trim()).filter(Boolean)
       : [];
 
-    // Fetch Google Tasks and Supabase metadata in parallel
+    // Fetch Google Tasks and Supabase metadata in parallel.
+    // Aggregate mode: pull every list, fetch tasks per-list in parallel, then flatten.
+    const googleTasksPromise: Promise<Array<tasks_v1.Schema$Task & { _list_id: string }>> = aggregateAll
+      ? (async () => {
+          const lists = await getTaskLists(req.userId!);
+          const perList = await Promise.all(
+            lists.map(async (l) => {
+              try {
+                const tasks = await getTasks(req.userId!, l.id, showCompleted);
+                return tasks.map((t) => ({ ...t, _list_id: l.id }));
+              } catch (err) {
+                console.warn(`[reminders] aggregate fetch failed for list ${l.id}:`, err);
+                return [];
+              }
+            }),
+          );
+          return perList.flat();
+        })()
+      : getTasks(req.userId!, listId, showCompleted).then((tasks) =>
+          tasks.map((t) => ({ ...t, _list_id: listId })),
+        );
+
+    const supaQuery = supabaseAdmin
+      .from('reminders')
+      .select('*')
+      .eq('user_id', req.userId);
+    const supaQueryFiltered = aggregateAll ? supaQuery : supaQuery.eq('google_list_id', listId);
+
     const [googleTasks, { data: metaRows }] = await Promise.all([
-      getTasks(req.userId!, listId, showCompleted),
-      supabaseAdmin
-        .from('reminders')
-        .select('*')
-        .eq('user_id', req.userId)
-        .eq('google_list_id', listId),
+      googleTasksPromise,
+      supaQueryFiltered,
     ]);
 
     // Build a lookup from google_task_id → Supabase metadata
@@ -228,14 +259,19 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       metaBySupaId.set(row.id, row);
     }
 
-    // Merge Google Tasks with Supabase metadata
+    // Merge Google Tasks with Supabase metadata. Use the per-task _list_id we
+    // attached above so aggregate mode preserves the originating list per item.
     let reminders = googleTasks.map((gt) => {
       const meta = gt.id ? metaByTaskId.get(gt.id) ?? null : null;
-      return mergeTaskWithMetadata(gt, meta);
+      const merged = mergeTaskWithMetadata(gt, meta);
+      // mergeTaskWithMetadata reads google_list_id from meta only; in aggregate
+      // mode we override with the actual containing list to keep accuracy.
+      merged.google_list_id = gt._list_id || merged.google_list_id;
+      return merged;
     });
 
     // Include legacy Supabase-only reminders (google_task_id is null) in @default list
-    if (listId === '@default') {
+    if (listId === '@default' || aggregateAll) {
       const legacyRows = (metaRows || []).filter((r) => !r.google_task_id);
       for (const row of legacyRows) {
         const legacyStatus: ReminderStatus = row.is_completed
@@ -552,6 +588,7 @@ router.post('/', validateBody(createReminderSchema), async (req: AuthRequest, re
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.status(201).json(reminder);
   } catch (err) {
     console.error('Failed to create reminder:', err);
@@ -631,6 +668,7 @@ router.put('/:id', validateBody(updateReminderSchema), async (req: AuthRequest, 
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch {
     res.status(500).json({ error: 'Failed to update reminder' });
@@ -686,6 +724,7 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json({ message: 'Reminder deleted successfully' });
   } catch {
     res.status(500).json({ error: 'Failed to delete reminder' });
@@ -759,6 +798,7 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch {
     res.status(500).json({ error: 'Failed to toggle reminder completion' });
@@ -831,6 +871,7 @@ router.patch('/:id/status', validateBody(statusSchema), async (req: AuthRequest,
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch {
     res.status(500).json({ error: 'Failed to update reminder status' });
@@ -891,6 +932,7 @@ router.patch('/:id/snooze', validateBody(snoozeSchema), async (req: AuthRequest,
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch {
     res.status(500).json({ error: 'Failed to snooze reminder' });
@@ -1019,6 +1061,7 @@ router.post('/:id/link-event', validateBody(linkEventSchema), async (req: AuthRe
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch (err) {
     console.error('Failed to link event:', err);
@@ -1048,6 +1091,7 @@ router.delete('/:id/link-event', async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json(reminder);
   } catch {
     res.status(500).json({ error: 'Failed to unlink event' });

@@ -3,7 +3,7 @@ import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { supabaseAdmin } from '../services/supabase';
 import { getCalendarClient } from '../services/google-calendar';
-import { summarizeSchedule } from '../services/gemini';
+import { summarizeSchedule, GeminiUnavailableError } from '../services/gemini';
 
 const router = Router();
 
@@ -66,18 +66,32 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
         }
       })(),
       (async () => {
-        const todayStr = startOfDay.toISOString().split('T')[0];
+        // Pull all incomplete reminders (regardless of due_date — including null
+        // and future) so the summarizer has the full ToDo backlog. The summarizer
+        // is responsible for prioritizing today-relevant items.
         const { data: reminders } = await supabaseAdmin
           .from('reminders')
-          .select('*')
+          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, tags, checklist, color')
           .eq('user_id', req.userId)
           .eq('is_completed', false)
-          .lte('due_date', todayStr);
+          .order('due_date', { ascending: true, nullsFirst: false })
+          .limit(100);
         return (reminders || []) as Record<string, unknown>[];
       })(),
     ]);
 
-    const summary = await summarizeSchedule(eventsResult, remindersResult, 'today');
+    let summary: string;
+    try {
+      summary = await summarizeSchedule(eventsResult, remindersResult, 'today');
+    } catch (err) {
+      // Show the friendly Korean message in the summary card so the user
+      // understands what's going on instead of seeing an empty fallback.
+      if (err instanceof GeminiUnavailableError) {
+        res.json({ summary: err.userMessage, events: eventsResult, reminders: remindersResult });
+        return;
+      }
+      throw err;
+    }
 
     // Cache the result
     summaryCache.set(cacheKey, {
@@ -88,7 +102,8 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
     });
 
     res.json({ summary, events: eventsResult, reminders: remindersResult });
-  } catch {
+  } catch (err) {
+    console.error('summary/today failed:', err);
     res.status(500).json({ error: 'Failed to generate today summary' });
   }
 });
@@ -125,18 +140,30 @@ router.get('/week', async (req: AuthRequest, res: Response) => {
         }
       })(),
       (async () => {
-        const endOfWeekStr = endOfWeek.toISOString().split('T')[0];
+        // Same as /today — fetch the full incomplete backlog. due_date filtering
+        // here would silently drop NULL-due ToDos and any item due past the week,
+        // which is exactly what the user reported as "todo의 일정을 가져오지 못함".
         const { data: reminders } = await supabaseAdmin
           .from('reminders')
-          .select('*')
+          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, tags, checklist, color')
           .eq('user_id', req.userId)
           .eq('is_completed', false)
-          .lte('due_date', endOfWeekStr);
+          .order('due_date', { ascending: true, nullsFirst: false })
+          .limit(100);
         return (reminders || []) as Record<string, unknown>[];
       })(),
     ]);
 
-    const summary = await summarizeSchedule(eventsResult, remindersResult, 'week');
+    let summary: string;
+    try {
+      summary = await summarizeSchedule(eventsResult, remindersResult, 'week');
+    } catch (err) {
+      if (err instanceof GeminiUnavailableError) {
+        res.json({ summary: err.userMessage, events: eventsResult, reminders: remindersResult });
+        return;
+      }
+      throw err;
+    }
 
     // Cache the result
     summaryCache.set(cacheKey, {
@@ -147,7 +174,8 @@ router.get('/week', async (req: AuthRequest, res: Response) => {
     });
 
     res.json({ summary, events: eventsResult, reminders: remindersResult });
-  } catch {
+  } catch (err) {
+    console.error('summary/week failed:', err);
     res.status(500).json({ error: 'Failed to generate week summary' });
   }
 });

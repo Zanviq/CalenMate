@@ -1,7 +1,88 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import type { GenerativeModel } from '@google/generative-ai';
 import { AIResponse } from '../types';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+// ── Gemini error handling ────────────────────────────────────────────────────
+//
+// Gemini 2.5 Flash periodically returns 503 ("high demand") and 429 ("quota")
+// errors that resolve themselves within a few seconds. We retry transient
+// failures with exponential backoff so the user typically never sees them.
+// After exhausting retries we surface a Korean message instead of leaking the
+// raw provider error string to the chat UI.
+
+class GeminiUnavailableError extends Error {
+  readonly userMessage: string;
+  readonly kind: 'overloaded' | 'quota' | 'unknown';
+  readonly originalError: unknown;
+  constructor(userMessage: string, kind: 'overloaded' | 'quota' | 'unknown', originalError?: unknown) {
+    super(userMessage);
+    this.name = 'GeminiUnavailableError';
+    this.userMessage = userMessage;
+    this.kind = kind;
+    this.originalError = originalError;
+  }
+}
+
+function classifyError(err: unknown): 'overloaded' | 'quota' | 'unknown' {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('503') || msg.includes('service unavailable') || msg.includes('high demand') || msg.includes('overload')) {
+    return 'overloaded';
+  }
+  if (msg.includes('429') || msg.includes('quota') || msg.includes('rate limit')) {
+    return 'quota';
+  }
+  return 'unknown';
+}
+
+function isRetryableError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // Retry transient HTTP statuses + obvious network failures.
+  return /\b(429|500|502|503|504)\b/.test(msg)
+    || msg.includes('service unavailable')
+    || msg.includes('high demand')
+    || msg.includes('overload')
+    || msg.includes('econnreset')
+    || msg.includes('econnrefused')
+    || msg.includes('etimedout')
+    || msg.includes('enotfound')
+    || msg.includes('socket hang up')
+    || msg.includes('fetch failed');
+}
+
+async function generateContentWithRetry(
+  model: GenerativeModel,
+  parts: Parameters<GenerativeModel['generateContent']>[0],
+  opts: { maxAttempts?: number; baseDelayMs?: number } = {},
+): Promise<Awaited<ReturnType<GenerativeModel['generateContent']>>> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 700;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await model.generateContent(parts);
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableError(err) || attempt === maxAttempts) break;
+      // Exponential backoff with jitter: ~700ms, 1.4s, 2.8s.
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) * (0.7 + Math.random() * 0.6);
+      console.warn(`[gemini] attempt ${attempt}/${maxAttempts} failed, retrying in ${Math.round(delay)}ms:`,
+        err instanceof Error ? err.message : err);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  // All retries exhausted (or non-retryable). Wrap with a Korean user message
+  // so callers can surface it directly without further translation.
+  const kind = classifyError(lastErr);
+  const userMessage =
+    kind === 'overloaded'
+      ? 'AI 모델이 현재 과부하 상태입니다. 잠시 후 (1~2분) 다시 시도해주세요.'
+      : kind === 'quota'
+        ? 'AI 사용량 한도에 도달했습니다. 잠시 후 다시 시도해주세요.'
+        : `AI 응답 처리 중 오류가 발생했습니다: ${lastErr instanceof Error ? lastErr.message : '알 수 없는 오류'}`;
+  throw new GeminiUnavailableError(userMessage, kind, lastErr);
+}
 
 interface ParseOptions {
   content: string;
@@ -75,6 +156,10 @@ Respond ONLY with valid JSON:
 - Default color: "peacock" (blue). Default reminder: none.
 - Color options: "tomato", "flamingo", "tangerine", "banana", "sage", "basil", "peacock", "blueberry", "lavender", "grape", "graphite"
   - Map Korean color names: 빨간색→tomato, 주황색→tangerine, 노란색→banana, 초록색→sage, 파란색→peacock, 보라색→grape, 회색→graphite, 분홍색→flamingo
+  - **사용자 메시지에 색상 이모티콘이 있으면 다음 매핑을 적용하라** (이모티콘은 색상 picker에서 삽입된 것):
+    🔴=tomato, 🟠=tangerine, 🟡=banana, 🟢=sage, 🔵=peacock, 🟣=grape, ⚫=graphite, 🩷=flamingo, 🟪=lavender, 🟦=blueberry, 🟩=basil
+  - 색상 이모티콘은 사용자가 색상을 명시적으로 선택한 신호이므로 일반적인 한국어 색상 단어보다 우선시하라.
+  - 이모티콘은 일정 제목(title)에 포함하지 마라. 색상 지정용 신호일 뿐이다.
 - For update/delete: data needs id of the target item
 
 #### Reminders (Google Tasks 연동): create_reminder, update_reminder, delete_reminder, complete_reminder
@@ -137,12 +222,27 @@ Respond ONLY with valid JSON:
 7. **여러 건을 삭제하거나 대량 수정하는 경우** requiresConfirmation을 true로 설정하라. 이 경우 response에 수행할 작업 내용을 요약하라 (예: "4개 일정을 삭제합니다"). 단건 작업은 requiresConfirmation: false로 바로 실행하라.
 8. 사용자에게 텍스트로 재확인을 묻지 마라. 확인이 필요하면 반드시 requiresConfirmation: true를 사용하라.`;
 
-  const result = await model.generateContent([
-    { text: systemPrompt },
-    { text: `== 현재 사용자 메시지 ==\n${content}` },
-  ]);
-
-  const responseText = result.response.text();
+  let responseText: string;
+  try {
+    const result = await generateContentWithRetry(model, [
+      { text: systemPrompt },
+      { text: `== 현재 사용자 메시지 ==\n${content}` },
+    ]);
+    responseText = result.response.text();
+  } catch (err) {
+    // Gracefully fall back so the user still sees a chat message rather than
+    // a generic 500. The user message + this assistant reply are persisted by
+    // the route handler exactly like a normal turn.
+    if (err instanceof GeminiUnavailableError) {
+      console.warn('[gemini] parseUserMessage giving up after retries:', err.kind);
+      return { actions: [], response: err.userMessage };
+    }
+    console.error('[gemini] parseUserMessage unexpected failure:', err);
+    return {
+      actions: [],
+      response: 'AI 응답 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+    };
+  }
 
   try {
     // responseMimeType: 'application/json' ensures clean JSON, but try multiple strategies
@@ -195,7 +295,7 @@ ${reminder.priority ? `- 우선순위: ${reminder.priority}` : ''}
 
 간결하고 실용적으로 작성하세요. 한국어로 답변하세요.`;
 
-  const result = await model.generateContent(prompt);
+  const result = await generateContentWithRetry(model, prompt);
   return result.response.text();
 }
 
@@ -221,22 +321,39 @@ export async function summarizeSchedule(
     };
   });
 
-  const trimmedReminders = reminders.map((r) => ({
-    title: r.title,
-    priority: r.priority,
-    due_date: r.due_date,
-  }));
+  const trimmedReminders = reminders.map((r) => {
+    const checklist = Array.isArray(r.checklist) ? r.checklist as Array<{ done: boolean }> : [];
+    const checklistDone = checklist.filter((c) => c.done).length;
+    return {
+      title: r.title,
+      priority: r.priority,
+      status: r.status,
+      due_date: r.due_date,
+      tags: Array.isArray(r.tags) ? r.tags : [],
+      checklist_progress: checklist.length > 0 ? `${checklistDone}/${checklist.length}` : null,
+      linked_to_event: !!r.linked_event_id,
+      started_at: r.started_at,
+    };
+  });
 
   const prompt = `당신은 CalenMate AI 비서입니다. ${periodLabel}의 일정과 ToDo를 한국어로 간결하게 요약해주세요.
 
 일정:
 ${JSON.stringify(trimmedEvents)}
 
-ToDo:
+ToDo (전체 미완료 백로그 — 이 중 ${periodLabel}에 관련 있는 것들 위주로 추려서 답변):
 ${JSON.stringify(trimmedReminders)}
 
-요약을 자연스러운 한국어로 작성해주세요. 중요한 일정을 강조하고, 시간순으로 정리해주세요.`;
+요약 작성 가이드:
+1. 중요한 일정을 시간순으로 강조하라.
+2. ${periodLabel === '오늘' ? '오늘 마감(due_date가 오늘 또는 그 전)인 ToDo와 진행 중(status=in_progress)인 ToDo를 우선' : '이번 주 안에 마감인 ToDo와 진행 중인 ToDo를 우선'}으로 다뤄라.
+3. 마감일(due_date)이 비어있는 ToDo도 우선순위가 high이거나 진행 중이면 언급하라.
+4. 체크리스트 진행률(checklist_progress)이 있으면 함께 보여줘라 (예: "보고서 작성 (3/5 완료)").
+5. linked_to_event=true는 캘린더에 이미 시간이 잡혀있다는 뜻이므로 일정과 함께 묶어서 표현하라.
+6. 자연스러운 한국어 마크다운으로 작성하라.`;
 
-  const result = await model.generateContent(prompt);
+  const result = await generateContentWithRetry(model, prompt);
   return result.response.text();
 }
+
+export { GeminiUnavailableError };

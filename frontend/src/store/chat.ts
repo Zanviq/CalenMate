@@ -43,12 +43,53 @@ interface ChatState {
   replaceMessages: (messages: ChatMessage[]) => void;
   sendMessage: (content: string) => Promise<SendMessageResult | null>;
   confirmActions: (messageId: string) => Promise<void>;
-  cancelActions: (messageId: string) => void;
+  cancelActions: (messageId: string) => Promise<void>;
   loadHistory: () => Promise<void>;
   loadOlderMessages: () => Promise<void>;
 }
 
 const HISTORY_PAGE_SIZE = 50;
+
+// Single source of truth for which action types map to which downstream
+// invalidation. link_reminder_event touches BOTH calendar and reminder data
+// (creates a calendar event AND patches reminder.linked_event_id), so it's in
+// both groups intentionally.
+const CALENDAR_ACTION_TYPES = new Set<AIAction['type']>([
+  'create_event',
+  'update_event',
+  'delete_event',
+  'link_reminder_event',
+]);
+
+const REMINDER_ACTION_TYPES = new Set<AIAction['type']>([
+  'create_reminder',
+  'update_reminder',
+  'delete_reminder',
+  'complete_reminder',
+  'set_reminder_status',
+  'link_reminder_event',
+]);
+
+const INSTRUCTION_ACTION_TYPES = new Set<AIAction['type']>([
+  'save_instruction',
+  'delete_instruction',
+]);
+
+function detectActionFlags(actions: AIAction[]): {
+  calendar: boolean;
+  reminder: boolean;
+  instruction: boolean;
+} {
+  let calendar = false;
+  let reminder = false;
+  let instruction = false;
+  for (const a of actions) {
+    if (CALENDAR_ACTION_TYPES.has(a.type)) calendar = true;
+    if (REMINDER_ACTION_TYPES.has(a.type)) reminder = true;
+    if (INSTRUCTION_ACTION_TYPES.has(a.type)) instruction = true;
+  }
+  return { calendar, reminder, instruction };
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messagesByContext: { home: [], calendar: [], reminder: [] },
@@ -162,15 +203,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         created_at: new Date().toISOString(),
       };
 
-      const hasCalendarAction = data.actions.some((a: AIAction) =>
-        a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
-      );
-      const hasReminderAction = data.actions.some((a: AIAction) =>
-        a.type === 'create_reminder' || a.type === 'update_reminder' || a.type === 'delete_reminder' || a.type === 'complete_reminder'
-      );
-      const hasInstructionAction = data.actions.some((a: AIAction) =>
-        a.type === 'save_instruction' || a.type === 'delete_instruction'
-      );
+      const flags = detectActionFlags(data.actions);
 
       set((state) => ({
         messagesByContext: {
@@ -178,9 +211,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [context]: [...state.messagesByContext[context], assistantMsg],
         },
         isLoading: false,
-        ...(hasCalendarAction && { calendarActionCount: state.calendarActionCount + 1 }),
-        ...(hasReminderAction && { reminderActionCount: state.reminderActionCount + 1 }),
-        ...(hasInstructionAction && { instructionActionCount: state.instructionActionCount + 1 }),
+        ...(flags.calendar && { calendarActionCount: state.calendarActionCount + 1 }),
+        ...(flags.reminder && { reminderActionCount: state.reminderActionCount + 1 }),
+        ...(flags.instruction && { instructionActionCount: state.instructionActionCount + 1 }),
       }));
 
       return { actions: data.actions, results: data.results || [], response: data.response };
@@ -204,69 +237,94 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const pendingActions = msg.metadata?.pendingActions as AIAction[] | undefined;
     if (!pendingActions?.length) return;
 
-    // Update UI to show loading state
-    const updateMessage = (updates: Record<string, unknown>) => {
+    // Patch the message's metadata with the supplied keys. Deletes are signalled
+    // by setting a key to `undefined` so the renderer's `pendingActions` check
+    // returns false on subsequent renders.
+    const patchMetadata = (updates: Record<string, unknown>) => {
       set((state) => ({
         messagesByContext: {
           ...state.messagesByContext,
-          [context]: state.messagesByContext[context].map((m) =>
-            m.id === messageId
-              ? { ...m, metadata: { ...m.metadata, ...updates } }
-              : m
-          ),
+          [context]: state.messagesByContext[context].map((m) => {
+            if (m.id !== messageId) return m;
+            const nextMeta: Record<string, unknown> = { ...m.metadata, ...updates };
+            for (const k of Object.keys(updates)) {
+              if (updates[k] === undefined) delete nextMeta[k];
+            }
+            return { ...m, metadata: nextMeta };
+          }),
         },
       }));
     };
 
-    updateMessage({ confirmationStatus: 'executing' });
+    patchMetadata({ confirmationStatus: 'executing' });
 
     try {
       const { data } = await api.post<{
         results: { type: string; data: Record<string, unknown> }[];
       }>('/api/chat/execute', { actions: pendingActions, messageId });
 
-      updateMessage({
+      // Drop pendingActions optimistically so the UI immediately stops showing
+      // the confirmation flow shell and the next render goes through the
+      // ActionBadges branch (which also surfaces the "확인됨" indicator).
+      patchMetadata({
         confirmationStatus: 'confirmed',
         results: data.results,
+        pendingActions: undefined,
       });
 
       // Increment action counters
-      const hasCalendarAction = pendingActions.some((a) =>
-        a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
-      );
-      const hasReminderAction = pendingActions.some((a) =>
-        a.type === 'create_reminder' || a.type === 'update_reminder' || a.type === 'delete_reminder' || a.type === 'complete_reminder'
-      );
-      const hasInstructionAction = pendingActions.some((a) =>
-        a.type === 'save_instruction' || a.type === 'delete_instruction'
-      );
+      const flags = detectActionFlags(pendingActions);
 
       set((state) => ({
-        ...(hasCalendarAction && { calendarActionCount: state.calendarActionCount + 1 }),
-        ...(hasReminderAction && { reminderActionCount: state.reminderActionCount + 1 }),
-        ...(hasInstructionAction && { instructionActionCount: state.instructionActionCount + 1 }),
+        ...(flags.calendar && { calendarActionCount: state.calendarActionCount + 1 }),
+        ...(flags.reminder && { reminderActionCount: state.reminderActionCount + 1 }),
+        ...(flags.instruction && { instructionActionCount: state.instructionActionCount + 1 }),
       }));
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { error?: string } }; message?: string };
-      updateMessage({
+      patchMetadata({
         confirmationStatus: 'error',
         confirmationError: axiosErr.response?.data?.error || axiosErr.message || '실행 실패',
+        // Keep pendingActions on error so the user can see what was supposed
+        // to happen; the renderer treats 'error' as terminal anyway.
       });
     }
   },
 
-  cancelActions: (messageId: string) => {
+  cancelActions: async (messageId: string) => {
     const { context } = get();
+    // Snapshot for rollback if persistence fails.
+    const previous = get().messagesByContext[context];
+    const target = previous.find((m) => m.id === messageId);
+    if (!target) return;
+
+    // Optimistically clear pendingActions and stamp 'cancelled'. Same shape as
+    // what the backend writes, so reload yields identical state.
     set((state) => ({
       messagesByContext: {
         ...state.messagesByContext,
-        [context]: state.messagesByContext[context].map((m) =>
-          m.id === messageId
-            ? { ...m, metadata: { ...m.metadata, confirmationStatus: 'cancelled' } }
-            : m
-        ),
+        [context]: previous.map((m) => {
+          if (m.id !== messageId) return m;
+          const nextMeta: Record<string, unknown> = {
+            ...m.metadata,
+            confirmationStatus: 'cancelled',
+          };
+          delete nextMeta.pendingActions;
+          return { ...m, metadata: nextMeta };
+        }),
       },
     }));
+
+    // Await persistence; revert if it fails so the user can retry.
+    try {
+      await api.post('/api/chat/cancel', { messageId });
+    } catch (err) {
+      console.error('Failed to persist cancel:', err);
+      set((state) => ({
+        messagesByContext: { ...state.messagesByContext, [context]: previous },
+        error: '취소를 저장하지 못했습니다. 다시 시도해주세요.',
+      }));
+    }
   },
 
   loadHistory: async () => {

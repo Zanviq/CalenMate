@@ -24,6 +24,11 @@ import ReactMarkdown from 'react-markdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useChatStore } from '@/store/chat';
 import { commands, executeCommand } from '@/lib/chat-commands';
 import type { ChatMessage } from '@/types';
@@ -61,6 +66,24 @@ const COLOR_ID_TO_NAME: Record<string, { label: string; hex: string }> = {
   '10': { label: 'Basil', hex: '#0b8043' },
   '11': { label: 'Tomato', hex: '#d50000' },
 };
+
+// Color palette for the chat picker. Each emoji is the marker the AI parses
+// (see gemini.ts color mapping). We deliberately use 7 unique-ish emojis so
+// users can visually distinguish colors after insertion; the marker is the
+// emoji itself, not the color id.
+const COLOR_PALETTE: { id: string; name: string; hex: string; emoji: string }[] = [
+  { id: '11', name: 'Tomato', hex: '#d50000', emoji: '🔴' },
+  { id: '6', name: 'Tangerine', hex: '#f4511e', emoji: '🟠' },
+  { id: '5', name: 'Banana', hex: '#f6bf26', emoji: '🟡' },
+  { id: '2', name: 'Sage', hex: '#33b679', emoji: '🟢' },
+  { id: '7', name: 'Peacock', hex: '#039be5', emoji: '🔵' },
+  { id: '3', name: 'Grape', hex: '#8e24aa', emoji: '🟣' },
+  { id: '4', name: 'Flamingo', hex: '#e67c73', emoji: '🩷' },
+  { id: '1', name: 'Lavender', hex: '#7986cb', emoji: '🟪' },
+  { id: '9', name: 'Blueberry', hex: '#3f51b5', emoji: '🟦' },
+  { id: '10', name: 'Basil', hex: '#0b8043', emoji: '🟩' },
+  { id: '8', name: 'Graphite', hex: '#616161', emoji: '⚫' },
+];
 
 const PRIORITY_LABELS: Record<string, { label: string; color: string }> = {
   low: { label: '낮음', color: 'text-blue-500' },
@@ -251,10 +274,41 @@ const ActionBadges = memo(function ActionBadges({ metadata }: { metadata: Record
   const results = metadata?.results as
     | { type: string; data: Record<string, unknown> }[]
     | undefined;
+  const status = metadata?.confirmationStatus as string | undefined;
+
+  // Cancelled: no actions ran, but show a small label so the user knows the
+  // confirmation flow ended without a result. Reload-safe because this is
+  // derived from persisted metadata.
+  if (status === 'cancelled') {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-400">
+        <XCircle className="h-3 w-3" />
+        <span>취소됨</span>
+      </div>
+    );
+  }
+
+  // Error: show error message inline.
+  if (status === 'error') {
+    const errorMsg = metadata?.confirmationError as string | undefined;
+    return (
+      <div className="mt-2 flex items-center gap-1.5 rounded-md bg-red-100 px-2 py-1 text-[11px] text-red-700 dark:bg-red-950 dark:text-red-400">
+        <XCircle className="h-3 w-3 shrink-0" />
+        <span>실행 실패: {errorMsg || '알 수 없는 오류'}</span>
+      </div>
+    );
+  }
+
   if (!results || results.length === 0) return null;
 
   return (
     <div className="mt-1.5 flex flex-col gap-1">
+      {status === 'confirmed' && (
+        <div className="flex items-center gap-1.5 text-[11px] text-green-600 dark:text-green-400">
+          <CheckCircle2 className="h-3 w-3" />
+          <span>확인됨</span>
+        </div>
+      )}
       {results.map((r, i) => (
         <ActionBadgeItem key={i} result={r} />
       ))}
@@ -376,17 +430,24 @@ const MessageBubble = memo(function MessageBubble({ msg }: { msg: ChatMessage })
             </div>
           )}
         </div>
-        {!isUser && msg.metadata && hasPendingActions(msg.metadata) && (
+        {!isUser && msg.metadata && isAwaitingConfirmation(msg.metadata) && (
           <ConfirmationBox messageId={msg.id} metadata={msg.metadata} />
         )}
-        {!isUser && msg.metadata && !hasPendingActions(msg.metadata) && <ActionBadges metadata={msg.metadata} />}
+        {!isUser && msg.metadata && !isAwaitingConfirmation(msg.metadata) && <ActionBadges metadata={msg.metadata} />}
       </div>
     </div>
   );
 });
 
-function hasPendingActions(metadata: Record<string, unknown>): boolean {
-  return Array.isArray(metadata?.pendingActions) && (metadata.pendingActions as unknown[]).length > 0;
+// True only when the message is mid-confirmation and the user hasn't yet
+// confirmed/cancelled. Terminal statuses (confirmed/cancelled/error) intentionally
+// fall through to ActionBadges so the buttons don't reappear after reload.
+function isAwaitingConfirmation(metadata: Record<string, unknown>): boolean {
+  if (!Array.isArray(metadata?.pendingActions) || (metadata.pendingActions as unknown[]).length === 0) {
+    return false;
+  }
+  const status = metadata?.confirmationStatus as string | undefined;
+  return status === 'pending' || status === 'executing' || status === undefined;
 }
 
 export function ChatPanel() {
@@ -408,10 +469,36 @@ export function ChatPanel() {
   const hasMore = hasMoreByContext[context];
   const [input, setInput] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const commandListRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Insert a color emoji at the current cursor position. Falls back to append
+  // when the input is unmounted or selection is unavailable.
+  const insertColorEmoji = useCallback((emoji: string) => {
+    const el = inputRef.current;
+    setColorPickerOpen(false);
+    if (!el) {
+      setInput((prev) => `${prev}${emoji} `);
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+    const insert = `${emoji} `;
+    const next = before + insert + after;
+    setInput(next);
+    // Restore caret right after the inserted emoji on the next tick.
+    requestAnimationFrame(() => {
+      const caret = before.length + insert.length;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  }, []);
 
   // Slash command autocomplete
   const filteredCommands = useMemo(() => {
@@ -625,7 +712,43 @@ export function ChatPanel() {
           </div>
         )}
         <div className="flex gap-2">
+          <Popover open={colorPickerOpen} onOpenChange={setColorPickerOpen}>
+            <PopoverTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0"
+                  disabled={isLoading}
+                  title="색상 이모티콘 삽입"
+                />
+              }
+            >
+              <Palette className="h-4 w-4" />
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-auto p-2">
+              <div className="mb-1.5 text-[10px] font-medium text-muted-foreground">
+                일정 색상
+              </div>
+              <div className="grid grid-cols-6 gap-1">
+                {COLOR_PALETTE.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => insertColorEmoji(c.emoji)}
+                    title={c.name}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-base transition-colors hover:bg-muted"
+                    aria-label={`${c.name} 색상 삽입`}
+                  >
+                    <span aria-hidden="true">{c.emoji}</span>
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
           <Input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}

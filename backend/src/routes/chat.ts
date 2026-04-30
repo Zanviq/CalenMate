@@ -408,12 +408,13 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     // Fetch all context data in parallel for maximum speed
     const [chatHistoryResult, instructionsResult, calendarResult, remindersResult] =
       await Promise.all([
-        // 1. Chat history (tiebreaker by role for stable ordering on equal timestamps)
+        // 1. Chat history — fetch globally (no context filter) so the AI has
+        //    cross-tab memory. The UI continues to filter by context via GET /history.
+        //    Tiebreaker by role for stable ordering on equal timestamps.
         supabaseAdmin
           .from('chat_messages')
-          .select('role, content')
+          .select('role, content, context')
           .eq('user_id', req.userId)
-          .eq('context', context)
           .order('created_at', { ascending: false })
           .order('role', { ascending: true })
           .limit(40),
@@ -455,12 +456,17 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           }
         })(),
 
-        // 4. Incomplete reminders (Supabase metadata with google_list_id)
+        // 4. Reminders (full state) — include both incomplete and recently-completed
+        //    (last 14 days) so the AI can answer "어제 완료한 일?" or reference
+        //    just-completed items conversationally. Order by recency; cap to keep
+        //    the prompt within sensible token budget.
         supabaseAdmin
           .from('reminders')
-          .select('id, title, priority, due_date, is_completed, google_task_id, google_list_id')
+          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, auto_complete_on_event_end, tags, checklist, notify, notify_at, color, google_task_id, google_list_id, updated_at')
           .eq('user_id', req.userId)
-          .eq('is_completed', false),
+          .or(`is_completed.eq.false,completed_at.gte.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
+          .order('updated_at', { ascending: false })
+          .limit(150),
       ]);
 
     // Log any Supabase query errors (gracefully degrade with empty data)
@@ -468,9 +474,14 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     if (instructionsResult.error) console.error('Instructions fetch error:', instructionsResult.error);
     if (remindersResult.error) console.error('Reminders fetch error:', remindersResult.error);
 
+    // Tag cross-context messages so the AI knows which tab a memory came from.
+    // Current-context messages stay untagged for cleanliness.
     const chatHistory = (chatHistoryResult.data || [])
       .reverse()
-      .map((m: { role: string; content: string }) => ({ role: m.role, content: m.content }));
+      .map((m: { role: string; content: string; context?: string }) => ({
+        role: m.role,
+        content: m.context && m.context !== context ? `[${m.context}] ${m.content}` : m.content,
+      }));
 
     const userInstructions = (instructionsResult.data || []) as { id: string; content: string }[];
 
@@ -515,13 +526,32 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       };
     });
 
-    const existingReminders = (remindersResult.data || []).map((r: Record<string, unknown>) => ({
-      id: r.id,
-      title: r.title,
-      priority: r.priority,
-      due_date: r.due_date,
-      google_list_id: r.google_list_id || '@default',
-    }));
+    // Map reminders into a compact AI-readable shape. Includes status/tags/checklist
+    // progress/linked_event so the AI can reason about state without per-question lookups.
+    const existingReminders = (remindersResult.data || []).map((r: Record<string, unknown>) => {
+      const checklist = Array.isArray(r.checklist) ? r.checklist as Array<{ done: boolean }> : [];
+      const checklistDone = checklist.filter((c) => c.done).length;
+      return {
+        id: r.id,
+        title: r.title,
+        description: r.description ?? null,
+        priority: r.priority,
+        status: r.status ?? (r.is_completed ? 'completed' : 'not_started'),
+        is_completed: r.is_completed,
+        due_date: r.due_date,
+        started_at: r.started_at ?? null,
+        completed_at: r.completed_at ?? null,
+        linked_event_id: r.linked_event_id ?? null,
+        auto_complete_on_event_end: r.auto_complete_on_event_end ?? false,
+        tags: Array.isArray(r.tags) ? r.tags : [],
+        checklist_progress: checklist.length > 0 ? `${checklistDone}/${checklist.length}` : null,
+        notify: r.notify ?? false,
+        notify_at: r.notify_at ?? null,
+        color: r.color ?? null,
+        google_task_id: r.google_task_id ?? null,
+        google_list_id: r.google_list_id || '@default',
+      };
+    });
 
     // Parse message with Gemini
     let aiResponse = await parseUserMessage({
@@ -792,12 +822,14 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
       }
     }
 
-    // Update the original message metadata
+    // Update the original message metadata. We deliberately DROP pendingActions
+    // here so the UI knows the confirmation flow has terminated — leaving them
+    // in caused the "buttons reappear on reload" bug because the renderer fell
+    // through to the pending-state branch when status detection got out of sync.
     await supabaseAdmin
       .from('chat_messages')
       .update({
         metadata: {
-          pendingActions: actions,
           confirmationStatus: 'confirmed',
           results: actionResults,
         },
@@ -814,6 +846,58 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
   } catch (err) {
     console.error('Execute error:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to execute actions' });
+  }
+});
+
+// POST /cancel - Persist cancellation of pending actions on a message.
+// Without this the cancellation lives only in client state and re-appears on
+// reload — confusing UX. The endpoint marks confirmationStatus='cancelled' so
+// the UI consistently hides the confirm/cancel buttons next time.
+const cancelSchema = z.object({
+  messageId: z.string().uuid(),
+});
+
+router.post('/cancel', validateBody(cancelSchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const { messageId } = req.body as { messageId: string };
+
+    const { data: existing } = await supabaseAdmin
+      .from('chat_messages')
+      .select('metadata')
+      .eq('id', messageId)
+      .eq('user_id', req.userId)
+      .single();
+
+    if (!existing) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+
+    // Strip pendingActions on cancel for the same reason as /execute — once
+    // the user has acted, the UI must not see "pending" pending actions on
+    // reload or it'll reflash the confirm buttons.
+    const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const { pendingActions: _pendingActions, ...rest } = existingMeta;
+    void _pendingActions;
+    const newMetadata = {
+      ...rest,
+      confirmationStatus: 'cancelled',
+    };
+
+    const { error } = await supabaseAdmin
+      .from('chat_messages')
+      .update({ metadata: newMetadata })
+      .eq('id', messageId)
+      .eq('user_id', req.userId);
+
+    if (error) {
+      res.status(500).json({ error: 'Failed to cancel actions' });
+      return;
+    }
+
+    res.json({ message: 'Cancelled' });
+  } catch {
+    res.status(500).json({ error: 'Failed to cancel actions' });
   }
 });
 

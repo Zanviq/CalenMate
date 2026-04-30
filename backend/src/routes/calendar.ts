@@ -4,6 +4,7 @@ import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
 import { getCalendarClient } from '../services/google-calendar';
+import { invalidateSummaryCache } from './summary';
 
 const router = Router();
 
@@ -94,6 +95,7 @@ router.post('/events', validateBody(createEventSchema), async (req: AuthRequest,
       },
     });
 
+    invalidateSummaryCache(req.userId!);
     res.status(201).json(toCalendarEvent(event.data));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to create event';
@@ -131,6 +133,7 @@ router.put('/events/:id', validateBody(updateEventSchema), async (req: AuthReque
       },
     });
 
+    invalidateSummaryCache(req.userId!);
     res.json(toCalendarEvent(response.data));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update event';
@@ -150,6 +153,7 @@ router.delete('/events/:id', async (req: AuthRequest, res: Response) => {
       eventId: id,
     });
 
+    invalidateSummaryCache(req.userId!);
     res.json({ message: 'Event deleted successfully' });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to delete event';

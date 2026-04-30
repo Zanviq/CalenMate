@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { supabaseAdmin } from '../services/supabase';
-import { generateReminderNote } from '../services/gemini';
+import { generateReminderNote, GeminiUnavailableError } from '../services/gemini';
 
 const router = Router();
 
@@ -131,7 +131,13 @@ router.post('/:id/notes/generate', async (req: AuthRequest, res: Response) => {
     }
 
     res.json(note);
-  } catch {
+  } catch (err) {
+    // Surface the friendly Korean message for known overload/quota cases.
+    if (err instanceof GeminiUnavailableError) {
+      res.status(503).json({ error: err.userMessage });
+      return;
+    }
+    console.error('reminder-notes generate failed:', err);
     res.status(500).json({ error: 'Failed to generate note' });
   }
 });

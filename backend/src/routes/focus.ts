@@ -4,6 +4,7 @@ import { AuthRequest, authMiddleware } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
 import { supabaseAdmin } from '../services/supabase';
 import { updateGoogleTask } from '../services/google-tasks';
+import { invalidateSummaryCache } from './summary';
 
 const router = Router();
 
@@ -133,6 +134,7 @@ router.post('/start', validateBody(startSchema), async (req: AuthRequest, res: R
         .eq('user_id', req.userId);
     }
 
+    invalidateSummaryCache(req.userId!);
     res.status(201).json({
       id: log.id,
       reminder_id,
@@ -221,6 +223,7 @@ router.post('/:logId/end', validateBody(endSchema), async (req: AuthRequest, res
       reminderUpdate = r2;
     }
 
+    invalidateSummaryCache(req.userId!);
     res.json({ log: updatedLog, reminder: reminderUpdate });
   } catch (err) {
     console.error('Failed to end focus session:', err);

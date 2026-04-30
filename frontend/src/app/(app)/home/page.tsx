@@ -51,6 +51,10 @@ export default function HomePage() {
   useEffect(() => {
     if (reminderActionCount > 0) {
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      // Tags can change via update_reminder; refresh the autocomplete source.
+      queryClient.invalidateQueries({ queryKey: ['reminder-tags'] });
+      // Reminder mutations can move items into/out of "today" — refresh summary.
+      queryClient.invalidateQueries({ queryKey: ['today-summary'] });
     }
   }, [reminderActionCount, queryClient]);
 

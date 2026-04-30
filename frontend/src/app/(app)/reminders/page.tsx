@@ -87,6 +87,8 @@ export default function RemindersPage() {
   useEffect(() => {
     if (reminderActionCount > 0) {
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      // AI may have changed tags via update_reminder — keep filter bar fresh.
+      queryClient.invalidateQueries({ queryKey: ['reminder-tags'] });
     }
   }, [reminderActionCount, queryClient]);
 
