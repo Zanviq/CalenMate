@@ -1,9 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { CalendarIcon } from 'lucide-react';
@@ -14,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { TagEditor } from './tag-editor';
 import {
   Select,
   SelectContent,
@@ -59,6 +61,7 @@ export function CreateReminderDialog({
   listId,
 }: CreateReminderDialogProps) {
   const queryClient = useQueryClient();
+  const [tags, setTags] = useState<string[]>([]);
 
   const {
     register,
@@ -77,22 +80,37 @@ export function CreateReminderDialog({
     },
   });
 
+  const { data: tagSuggestions = [] } = useQuery<{ name: string; count: number }[]>({
+    queryKey: ['reminder-tags'],
+    queryFn: async () => {
+      const res = await api.get('/api/reminders/tags');
+      return res.data;
+    },
+    staleTime: 60_000,
+  });
+
   const createMutation = useMutation({
     mutationFn: (data: CreateReminderForm) =>
-      api.post('/api/reminders', { ...data, list_id: listId || '@default' }),
+      api.post('/api/reminders', { ...data, tags, list_id: listId || '@default' }),
     onMutate: (data) => {
       // Close dialog immediately for snappy UX
-      const savedData = { ...data };
+      const savedData = { ...data, tags };
       reset();
+      setTags([]);
       onOpenChange(false);
       return { savedData };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      queryClient.invalidateQueries({ queryKey: ['reminder-tags'] });
     },
     onError: (_err, _data, ctx) => {
       // Reopen dialog with previous data so user can retry
-      if (ctx?.savedData) reset(ctx.savedData);
+      if (ctx?.savedData) {
+        const { tags: savedTags, ...formData } = ctx.savedData;
+        reset(formData);
+        setTags(savedTags);
+      }
       onOpenChange(true);
     },
   });
@@ -185,6 +203,13 @@ export function CreateReminderDialog({
               )}
             />
           </div>
+
+          {/* Tags */}
+          <TagEditor
+            tags={tags}
+            suggestions={tagSuggestions.map((t) => t.name)}
+            onChange={setTags}
+          />
 
           {/* Notify */}
           <div className="flex items-center gap-2">

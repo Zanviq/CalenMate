@@ -8,6 +8,23 @@ export interface Profile {
   updated_at: string;
 }
 
+export type ReminderStatus = 'not_started' | 'in_progress' | 'completed';
+
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  done: boolean;
+  order: number;
+}
+
+export interface LinkedEventInfo {
+  id: string;
+  summary: string | null;
+  start: string | null;
+  end: string | null;
+  all_day: boolean;
+}
+
 export interface Reminder {
   id: string;
   user_id: string;
@@ -15,7 +32,14 @@ export interface Reminder {
   description: string | null;
   due_date: string | null;
   priority: 'low' | 'medium' | 'high';
+  status: ReminderStatus;
   is_completed: boolean;
+  started_at: string | null;
+  completed_at: string | null;
+  linked_event_id: string | null;
+  auto_complete_on_event_end: boolean;
+  checklist: ChecklistItem[];
+  tags: string[];
   notify: boolean;
   notify_at: string | null;
   color: string | null;
@@ -23,6 +47,7 @@ export interface Reminder {
   google_list_id: string | null;
   created_at: string;
   updated_at: string;
+  linked_event?: LinkedEventInfo | null;
 }
 
 export interface TaskList {
@@ -71,6 +96,7 @@ export interface AIAction {
   type:
     | 'create_event' | 'update_event' | 'delete_event'
     | 'create_reminder' | 'update_reminder' | 'delete_reminder' | 'complete_reminder'
+    | 'set_reminder_status' | 'link_reminder_event'
     | 'save_instruction' | 'delete_instruction'
     | 'query_events';
   data: Record<string, unknown>;

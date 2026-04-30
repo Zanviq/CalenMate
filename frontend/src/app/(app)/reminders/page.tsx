@@ -11,14 +11,16 @@ import {
   Calendar as CalendarIcon,
   AlertCircle,
   CheckCircle2,
+  Circle,
+  CircleDashed,
   ListTodo,
+  Link as LinkIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
-import type { Reminder } from '@/types';
+import type { Reminder, ReminderStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chat';
@@ -33,12 +35,30 @@ const priorityConfig = {
   low: { label: '낮음', variant: 'secondary' as const },
 };
 
+// Cycle: not_started → in_progress → completed → not_started
+function nextStatus(current: ReminderStatus): ReminderStatus {
+  if (current === 'not_started') return 'in_progress';
+  if (current === 'in_progress') return 'completed';
+  return 'not_started';
+}
+
+function StatusIcon({ status }: { status: ReminderStatus }) {
+  if (status === 'completed') {
+    return <CheckCircle2 className="h-4 w-4 text-green-600" strokeWidth={2.5} />;
+  }
+  if (status === 'in_progress') {
+    return <CircleDashed className="h-4 w-4 animate-spin text-blue-500" style={{ animationDuration: '4s' }} strokeWidth={2.5} />;
+  }
+  return <Circle className="h-4 w-4 text-zinc-400" strokeWidth={2} />;
+}
+
 export default function RemindersPage() {
   const { setContext, reminderActionCount } = useChatStore();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<FilterTab>('all');
   const [selectedListId, setSelectedListId] = useState<string>('@default');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const deleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -57,49 +77,61 @@ export default function RemindersPage() {
     }
   }, [reminderActionCount, queryClient]);
 
-  // Server-side filtering: pass status and listId params
+  // Server-side filtering: pass status, listId, and tags params
   const statusParam = filter === 'all' ? undefined : filter === 'active' ? 'active' : 'completed';
+  const sortedSelectedTags = [...selectedTags].sort();
+  const tagsKey = sortedSelectedTags.join(',');
   const { data: reminders = [], isLoading } = useQuery<Reminder[]>({
-    queryKey: ['reminders', filter, selectedListId],
+    queryKey: ['reminders', filter, selectedListId, tagsKey],
     queryFn: async () => {
       const params: Record<string, string> = { listId: selectedListId };
       if (statusParam) params.status = statusParam;
+      if (tagsKey) params.tags = tagsKey;
       const res = await api.get('/api/reminders', { params });
       return res.data;
     },
     staleTime: 30_000,
   });
 
-  const toggleCompleteMutation = useMutation({
-    mutationFn: async (reminder: Reminder) => {
-      const res = await api.patch(`/api/reminders/${reminder.id}/complete`, {
-        google_task_id: reminder.google_task_id,
-        google_list_id: reminder.google_list_id,
-        is_completed: reminder.is_completed,
-      });
+  const { data: allTags = [] } = useQuery<{ name: string; count: number }[]>({
+    queryKey: ['reminder-tags'],
+    queryFn: async () => {
+      const res = await api.get('/api/reminders/tags');
+      return res.data;
+    },
+    staleTime: 60_000,
+  });
+
+  const setStatusMutation = useMutation({
+    mutationFn: async ({ reminder, status }: { reminder: Reminder; status: ReminderStatus }) => {
+      const res = await api.patch(`/api/reminders/${reminder.id}/status`, { status });
       return res.data as Reminder;
     },
-    onMutate: async (reminder) => {
+    onMutate: async ({ reminder, status }) => {
       await queryClient.cancelQueries({ queryKey: ['reminders'] });
-      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
-      // Optimistic update across all cached reminder queries
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId, tagsKey]);
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
-        old?.map((r) =>
-          r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
-        )
+        Array.isArray(old)
+          ? old.map((r) =>
+              r.id === reminder.id
+                ? { ...r, status, is_completed: status === 'completed' }
+                : r
+            )
+          : old
       );
       return { previous };
     },
-    onError: (_err, _reminder, ctx) => {
+    onError: (_err, _vars, ctx) => {
       if (ctx?.previous) {
-        queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
+        queryClient.setQueryData(['reminders', filter, selectedListId, tagsKey], ctx.previous);
       }
       toast.error('ToDo 상태 변경에 실패했습니다');
     },
     onSuccess: (updated) => {
-      // Patch the confirmed server state into all cached queries (no refetch needed)
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
-        old?.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+        Array.isArray(old)
+          ? old.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+          : old
       );
     },
   });
@@ -112,22 +144,23 @@ export default function RemindersPage() {
       },
     }),
     onMutate: async (reminder) => {
-      await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId] });
-      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId]);
-      queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId], (old) =>
+      await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId, tagsKey] });
+      const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId, tagsKey]);
+      queryClient.setQueryData<Reminder[]>(['reminders', filter, selectedListId, tagsKey], (old) =>
         old?.filter((r) => r.id !== reminder.id)
       );
       return { previous };
     },
     onError: (_err, _reminder, ctx) => {
       if (ctx?.previous) {
-        queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
+        queryClient.setQueryData(['reminders', filter, selectedListId, tagsKey], ctx.previous);
       }
       toast.error('ToDo 삭제에 실패했습니다');
     },
     onSettled: () => {
       setDeleteTarget(null);
       queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      queryClient.invalidateQueries({ queryKey: ['reminder-tags'] });
     },
   });
 
@@ -139,9 +172,10 @@ export default function RemindersPage() {
     return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
   });
 
-  const handleToggleComplete = (e: React.MouseEvent, reminder: Reminder) => {
+  const handleCycleStatus = (e: React.MouseEvent, reminder: Reminder) => {
     e.stopPropagation();
-    toggleCompleteMutation.mutate(reminder);
+    const current: ReminderStatus = reminder.status ?? (reminder.is_completed ? 'completed' : 'not_started');
+    setStatusMutation.mutate({ reminder, status: nextStatus(current) });
   };
 
   const handleDeleteStart = (e: React.MouseEvent, reminderId: string) => {
@@ -188,6 +222,46 @@ export default function RemindersPage() {
         </Tabs>
       </div>
 
+      {/* Tag Filter Bar */}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b px-6 py-2">
+          <span className="text-xs text-muted-foreground">태그</span>
+          {allTags.map((tag) => {
+            const active = selectedTags.includes(tag.name);
+            return (
+              <button
+                key={tag.name}
+                type="button"
+                onClick={() =>
+                  setSelectedTags(
+                    active
+                      ? selectedTags.filter((t) => t !== tag.name)
+                      : [...selectedTags, tag.name],
+                  )
+                }
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                  active
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-zinc-200 hover:bg-muted dark:border-zinc-800'
+                }`}
+              >
+                <span>#{tag.name}</span>
+                <span className="text-[10px] opacity-60">{tag.count}</span>
+              </button>
+            );
+          })}
+          {selectedTags.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedTags([])}
+              className="ml-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              초기화
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Content */}
       <ScrollArea className="flex-1">
         {isLoading ? (
@@ -218,13 +292,23 @@ export default function RemindersPage() {
                 className="flex cursor-pointer items-center gap-3 px-6 py-3 transition-colors hover:bg-muted/50"
                 onClick={() => router.push(`/reminders/${reminder.id}`)}
               >
-                {/* Checkbox */}
-                <div onClick={(e) => handleToggleComplete(e, reminder)}>
-                  <Checkbox
-                    checked={reminder.is_completed}
-                    onCheckedChange={() => {}}
+                {/* Status toggle (3-state cycle) */}
+                <button
+                  type="button"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted"
+                  onClick={(e) => handleCycleStatus(e, reminder)}
+                  title={
+                    reminder.status === 'completed'
+                      ? '완료됨 (클릭하여 시작 안 함으로)'
+                      : reminder.status === 'in_progress'
+                        ? '진행 중 (클릭하여 완료로)'
+                        : '시작 안 함 (클릭하여 진행 중으로)'
+                  }
+                >
+                  <StatusIcon
+                    status={reminder.status ?? (reminder.is_completed ? 'completed' : 'not_started')}
                   />
-                </div>
+                </button>
 
                 {/* Content */}
                 <div className="min-w-0 flex-1">
@@ -239,11 +323,35 @@ export default function RemindersPage() {
                       className={`truncate text-sm font-medium ${
                         reminder.is_completed
                           ? 'text-zinc-400 line-through'
-                          : 'text-foreground'
+                          : reminder.status === 'in_progress'
+                            ? 'text-foreground'
+                            : 'text-foreground'
                       }`}
                     >
                       {reminder.title}
                     </span>
+                    {reminder.linked_event_id && (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"
+                        title="캘린더 일정과 연결됨"
+                      >
+                        <LinkIcon className="h-2.5 w-2.5" />
+                        링크
+                      </span>
+                    )}
+                    {reminder.checklist && reminder.checklist.length > 0 && (
+                      <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {reminder.checklist.filter((c) => c.done).length}/{reminder.checklist.length}
+                      </span>
+                    )}
+                    {reminder.tags && reminder.tags.length > 0 && reminder.tags.map((t) => (
+                      <span
+                        key={t}
+                        className="shrink-0 rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                      >
+                        #{t}
+                      </span>
+                    ))}
                   </div>
                   {reminder.due_date && (
                     <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">
@@ -263,11 +371,6 @@ export default function RemindersPage() {
                 {/* Notify indicator */}
                 {reminder.notify && (
                   <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                )}
-
-                {/* Completed indicator */}
-                {reminder.is_completed && (
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />
                 )}
 
                 {/* Delete */}

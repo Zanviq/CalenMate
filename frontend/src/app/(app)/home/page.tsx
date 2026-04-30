@@ -115,9 +115,11 @@ export default function HomePage() {
       await queryClient.cancelQueries({ queryKey: ['reminders'] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders']);
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
-        old?.map((r) =>
-          r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
-        )
+        Array.isArray(old)
+          ? old.map((r) =>
+              r.id === reminder.id ? { ...r, is_completed: !r.is_completed } : r
+            )
+          : old
       );
       return { previous };
     },
@@ -129,7 +131,9 @@ export default function HomePage() {
     },
     onSuccess: (updated) => {
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
-        old?.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+        Array.isArray(old)
+          ? old.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+          : old
       );
     },
   });

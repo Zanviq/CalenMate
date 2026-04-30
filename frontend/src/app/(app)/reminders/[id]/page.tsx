@@ -7,13 +7,16 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
-import { ArrowLeft, Save, Loader2, List, Trash2, CheckCircle2, Circle, Sparkles } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, List, Trash2, CheckCircle2, Circle, CircleDashed, Sparkles, Link as LinkIcon, Unlink, Clock, AlarmClock, Hourglass } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { CalendarIcon } from 'lucide-react';
 import api from '@/lib/api';
-import type { Reminder, ReminderNote, TaskList } from '@/types';
+import type { ChecklistItem, LinkedEventInfo, Reminder, ReminderNote, ReminderStatus, TaskList } from '@/types';
+import { LinkEventDialog } from '@/components/reminders/link-event-dialog';
+import { ChecklistEditor } from '@/components/reminders/checklist-editor';
+import { TagEditor } from '@/components/reminders/tag-editor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -38,6 +41,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chat';
@@ -63,6 +72,24 @@ function toLocalDateString(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function formatLinkedEvent(ev: LinkedEventInfo): string {
+  if (ev.all_day) {
+    if (!ev.start) return '연결된 일정';
+    return `${format(new Date(ev.start), 'M월 d일', { locale: ko })} (종일)`;
+  }
+  if (!ev.start || !ev.end) return '연결된 일정';
+  const s = new Date(ev.start);
+  const e = new Date(ev.end);
+  const sameDay =
+    s.getFullYear() === e.getFullYear() &&
+    s.getMonth() === e.getMonth() &&
+    s.getDate() === e.getDate();
+  if (sameDay) {
+    return `${format(s, 'M월 d일 HH:mm', { locale: ko })}–${format(e, 'HH:mm', { locale: ko })}`;
+  }
+  return `${format(s, 'M월 d일 HH:mm', { locale: ko })} → ${format(e, 'M월 d일 HH:mm', { locale: ko })}`;
+}
+
 const colorOptions = [
   { value: '', label: '없음' },
   { value: '#ef4444', label: '빨강' },
@@ -82,6 +109,7 @@ export default function ReminderDetailPage() {
   const [activeTab, setActiveTab] = useState('edit');
   const [noteContent, setNoteContent] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
 
   useEffect(() => {
     setContext('reminder');
@@ -170,25 +198,158 @@ export default function ReminderDetailPage() {
     },
   });
 
-  // Toggle completion
-  const toggleCompleteMutation = useMutation({
-    mutationFn: async () => {
-      const res = await api.patch(`/api/reminders/${id}/complete`, {
-        google_task_id: reminder?.google_task_id,
-        google_list_id: reminder?.google_list_id,
-        is_completed: reminder?.is_completed,
-      });
+  // Set multi-state status (cycles through not_started → in_progress → completed)
+  const setStatusMutation = useMutation({
+    mutationFn: async (status: ReminderStatus) => {
+      const res = await api.patch(`/api/reminders/${id}/status`, { status });
       return res.data as Reminder;
     },
     onSuccess: (updated) => {
       queryClient.setQueryData(['reminders', id], updated);
-      // Update list caches directly instead of refetch
+      // Prefix-match also hits non-array caches (single Reminder, ReminderNote);
+      // guard with Array.isArray so the updater doesn't crash on those.
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>
-        old?.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+        Array.isArray(old)
+          ? old.map((r) => r.id === updated.id ? { ...r, ...updated } : r)
+          : old
       );
     },
     onError: () => {
       toast.error('상태 변경에 실패했습니다');
+    },
+  });
+
+  // Tag suggestions (existing tags across all reminders)
+  const { data: tagSuggestions = [] } = useQuery<{ name: string; count: number }[]>({
+    queryKey: ['reminder-tags'],
+    queryFn: async () => {
+      const res = await api.get('/api/reminders/tags');
+      return res.data;
+    },
+    staleTime: 60_000,
+  });
+
+  // Update tags (sends only the tags field, leaves Google Tasks untouched)
+  const updateTagsMutation = useMutation({
+    mutationFn: async (tags: string[]) => {
+      const res = await api.put(`/api/reminders/${id}`, {
+        tags,
+        google_task_id: reminder?.google_task_id,
+        google_list_id: reminder?.google_list_id,
+      });
+      return res.data as Reminder;
+    },
+    onMutate: async (tags) => {
+      await queryClient.cancelQueries({ queryKey: ['reminders', id] });
+      const previous = queryClient.getQueryData<Reminder>(['reminders', id]);
+      if (previous) {
+        queryClient.setQueryData<Reminder>(['reminders', id], { ...previous, tags });
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(['reminders', id], ctx.previous);
+      toast.error('태그 저장에 실패했습니다');
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['reminders', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+      queryClient.invalidateQueries({ queryKey: ['reminder-tags'] });
+    },
+  });
+
+  // Update checklist (sends only the checklist field, leaves Google Tasks untouched)
+  const updateChecklistMutation = useMutation({
+    mutationFn: async (checklist: ChecklistItem[]) => {
+      const res = await api.put(`/api/reminders/${id}`, {
+        checklist,
+        google_task_id: reminder?.google_task_id,
+        google_list_id: reminder?.google_list_id,
+      });
+      return res.data as Reminder;
+    },
+    onMutate: async (checklist) => {
+      await queryClient.cancelQueries({ queryKey: ['reminders', id] });
+      const previous = queryClient.getQueryData<Reminder>(['reminders', id]);
+      if (previous) {
+        queryClient.setQueryData<Reminder>(['reminders', id], { ...previous, checklist });
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(['reminders', id], ctx.previous);
+      toast.error('체크리스트 저장에 실패했습니다');
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['reminders', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+    },
+  });
+
+  // Focus session: start a Pomodoro-style timer.
+  const startFocusMutation = useMutation({
+    mutationFn: async (duration_minutes: number) => {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        try {
+          await Notification.requestPermission();
+        } catch {
+          // Permission flow failed; continue without notifications.
+        }
+      }
+      const res = await api.post('/api/focus/start', {
+        reminder_id: id,
+        duration_minutes,
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['focus-active'] });
+      queryClient.invalidateQueries({ queryKey: ['reminders', id] });
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+      toast.success('포커스 세션을 시작했습니다');
+    },
+    onError: (err: unknown) => {
+      const data = (err as { response?: { data?: { error?: string } } })?.response?.data;
+      if (data?.error?.toLowerCase().includes('already')) {
+        toast.error('이미 진행 중인 포커스 세션이 있습니다');
+      } else {
+        toast.error('포커스 세션 시작에 실패했습니다');
+      }
+    },
+  });
+
+  // Snooze (quick-shift due_date forward by a preset)
+  const snoozeMutation = useMutation({
+    mutationFn: async (until: string) => {
+      const res = await api.patch(`/api/reminders/${id}/snooze`, { until });
+      return res.data as Reminder;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['reminders', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+      const newDate = updated.due_date
+        ? format(new Date(updated.due_date), 'M월 d일', { locale: ko })
+        : '';
+      toast.success(newDate ? `${newDate}로 스누즈했습니다` : '스누즈했습니다');
+    },
+    onError: () => {
+      toast.error('스누즈에 실패했습니다');
+    },
+  });
+
+  // Unlink calendar event
+  const unlinkEventMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.delete(`/api/reminders/${id}/link-event`);
+      return res.data as Reminder;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['reminders', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['reminders'], exact: false });
+      toast.success('일정 연결을 해제했습니다');
+    },
+    onError: () => {
+      toast.error('연결 해제에 실패했습니다');
     },
   });
 
@@ -284,20 +445,119 @@ export default function ReminderDetailPage() {
           </span>
         )}
         <div className="flex items-center gap-1">
-          <Button
-            variant={reminder.is_completed ? 'default' : 'outline'}
-            size="sm"
-            className="gap-1.5"
-            onClick={() => toggleCompleteMutation.mutate()}
-            disabled={toggleCompleteMutation.isPending}
-          >
-            {reminder.is_completed ? (
-              <CheckCircle2 className="h-4 w-4" />
-            ) : (
-              <Circle className="h-4 w-4" />
-            )}
-            {reminder.is_completed ? '완료됨' : '완료'}
-          </Button>
+          {/* Link / Unlink calendar event */}
+          {reminder.linked_event_id ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => unlinkEventMutation.mutate()}
+              disabled={unlinkEventMutation.isPending}
+              title="캘린더 일정과의 연결을 해제합니다"
+            >
+              <Unlink className="h-4 w-4" />
+              연결 해제
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setLinkDialogOpen(true)}
+              title="이 ToDo에 캘린더 시간을 잡습니다"
+            >
+              <LinkIcon className="h-4 w-4" />
+              시간 잡기
+            </Button>
+          )}
+
+          {/* Focus session: Pomodoro-style timer */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={startFocusMutation.isPending}
+                  title="포커스 세션을 시작합니다"
+                />
+              }
+            >
+              <Hourglass className="h-4 w-4" />
+              포커스
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={() => startFocusMutation.mutate(15)}>
+                15분
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => startFocusMutation.mutate(25)}>
+                25분 (Pomodoro)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => startFocusMutation.mutate(50)}>
+                50분
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Snooze: quick-shift due_date */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={snoozeMutation.isPending}
+                  title="마감일을 미룹니다"
+                />
+              }
+            >
+              <AlarmClock className="h-4 w-4" />
+              스누즈
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => snoozeMutation.mutate('tomorrow')}>
+                내일
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => snoozeMutation.mutate('next_week')}>
+                1주일 후
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => snoozeMutation.mutate('next_monday')}>
+                다음 주 월요일
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* 3-state status cycle */}
+          {(() => {
+            const status: ReminderStatus =
+              reminder.status ?? (reminder.is_completed ? 'completed' : 'not_started');
+            const next: ReminderStatus =
+              status === 'not_started' ? 'in_progress'
+              : status === 'in_progress' ? 'completed'
+              : 'not_started';
+            const Icon =
+              status === 'completed' ? CheckCircle2
+              : status === 'in_progress' ? CircleDashed
+              : Circle;
+            const label =
+              status === 'completed' ? '완료됨'
+              : status === 'in_progress' ? '진행 중'
+              : '시작 안 함';
+            return (
+              <Button
+                variant={status === 'completed' ? 'default' : 'outline'}
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setStatusMutation.mutate(next)}
+                disabled={setStatusMutation.isPending}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </Button>
+            );
+          })()}
           <AlertDialog>
             <AlertDialogTrigger
               render={
@@ -330,6 +590,21 @@ export default function ReminderDetailPage() {
           </AlertDialog>
         </div>
       </div>
+
+      {/* Linked calendar event banner */}
+      {reminder.linked_event && (
+        <div className="flex items-center gap-2 border-b bg-blue-50/50 px-6 py-2 text-xs text-zinc-600 dark:bg-blue-950/30 dark:text-zinc-400">
+          <Clock className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="truncate">
+            {formatLinkedEvent(reminder.linked_event)}
+            {reminder.linked_event.summary &&
+              reminder.linked_event.summary !== reminder.title && (
+                <span className="ml-2 text-zinc-500">— {reminder.linked_event.summary}</span>
+              )}
+            <span className="ml-1 text-zinc-500">일정과 연결됨</span>
+          </span>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
@@ -368,6 +643,21 @@ export default function ReminderDetailPage() {
                   {...register('description')}
                 />
               </div>
+
+              {/* Tags (saves independently, not part of the form's dirty state) */}
+              <TagEditor
+                tags={reminder.tags ?? []}
+                suggestions={tagSuggestions.map((t) => t.name)}
+                onChange={(tags) => updateTagsMutation.mutate(tags)}
+                disabled={updateTagsMutation.isPending}
+              />
+
+              {/* Checklist (saves independently, not part of the form's dirty state) */}
+              <ChecklistEditor
+                items={reminder.checklist ?? []}
+                onChange={(items) => updateChecklistMutation.mutate(items)}
+                disabled={updateChecklistMutation.isPending}
+              />
 
               {/* Due Date */}
               <div className="space-y-1.5">
@@ -567,6 +857,12 @@ export default function ReminderDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <LinkEventDialog
+        open={linkDialogOpen}
+        onOpenChange={setLinkDialogOpen}
+        reminderId={id}
+      />
     </div>
   );
 }

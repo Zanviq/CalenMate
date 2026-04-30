@@ -42,6 +42,8 @@ const ACTION_LABELS: Record<string, { label: string; icon: typeof Calendar }> = 
   reminder_updated: { label: 'ToDo 수정됨', icon: ListChecks },
   reminder_deleted: { label: 'ToDo 삭제됨', icon: ListChecks },
   reminder_completed: { label: 'ToDo 완료됨', icon: ListChecks },
+  reminder_status_updated: { label: 'ToDo 상태 변경됨', icon: ListChecks },
+  reminder_linked: { label: 'ToDo 일정 연결됨', icon: ListChecks },
   instruction_saved: { label: '지시사항 저장됨', icon: BookOpen },
   instruction_deleted: { label: '지시사항 삭제됨', icon: BookOpen },
 };

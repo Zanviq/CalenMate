@@ -15,6 +15,8 @@ import chatRoutes from './routes/chat';
 import summaryRoutes from './routes/summary';
 import instructionRoutes from './routes/instructions';
 import settingsRoutes from './routes/settings';
+import insightsRoutes from './routes/insights';
+import focusRoutes from './routes/focus';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -42,6 +44,8 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/summary', summaryRoutes);
 app.use('/api/instructions', instructionRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/insights', insightsRoutes);
+app.use('/api/focus', focusRoutes);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

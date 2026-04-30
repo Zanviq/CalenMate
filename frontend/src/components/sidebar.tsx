@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Home, Calendar, CheckSquare, Settings, LogOut, User } from 'lucide-react';
+import { Home, Calendar, CheckSquare, BarChart3, Settings, LogOut, User } from 'lucide-react';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import {
   DropdownMenu,
@@ -24,6 +24,7 @@ const navItems = [
   { href: '/home', label: 'Home', icon: Home },
   { href: '/reminders', label: 'Reminders', icon: CheckSquare },
   { href: '/calendar', label: 'Calendar', icon: Calendar },
+  { href: '/insights', label: 'Insights', icon: BarChart3 },
   { href: '/settings', label: 'Settings', icon: Settings },
 ] as const;
 

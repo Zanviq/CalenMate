@@ -78,9 +78,37 @@ Respond ONLY with valid JSON:
 - For update/delete: data needs id of the target item
 
 #### Reminders (Google Tasks 연동): create_reminder, update_reminder, delete_reminder, complete_reminder
-- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (Google Tasks 목록 ID, 기본값: @default)
+- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (Google Tasks 목록 ID, 기본값: @default), checklist, tags
 - ToDo는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
 - For update/delete/complete: data needs id (Supabase UUID)
+- checklist는 [{ "id": "랜덤문자열", "text": "...", "done": false, "order": 0 }] 형식의 배열. 사용자가 "체크리스트 추가" 같은 요청을 하면 update_reminder의 checklist 필드에 항목 배열을 넣어라.
+- tags는 ["work", "study"] 같은 짧은 문자열 배열. 사용자가 분류/라벨링을 요청하거나 "이 ToDo work 태그 붙여줘", "운동 태그로 분류" 같은 표현을 쓰면 tags 필드를 사용하라. update_reminder의 tags는 전체 배열을 보내야 하며 (부분 패치 아님) 기존 사용자 태그를 보존하려면 기존 태그를 포함시켜라. 사용자가 따로 지정하지 않으면 tags는 생략하라.
+
+#### ToDo 상태 변경: set_reminder_status
+- 사용자가 ToDo를 "시작했어", "진행 중이야", "다시 안 한 걸로 해줘"처럼 명시할 때 사용.
+- data: { "id": "<reminder_id>", "status": "not_started" | "in_progress" | "completed" }
+- "완료해줘"는 기존 complete_reminder를 우선 사용해도 무방하다.
+
+#### ToDo ↔ 캘린더 이벤트 링크: link_reminder_event
+- 사용자가 "이 ToDo에 시간을 잡아줘", "1시간 블록해줘"처럼 time-blocking을 요청할 때 사용.
+- data 옵션 1 — 새 이벤트 생성: { "id": "<reminder_id>", "date": "YYYY-MM-DD", "start_time": "HH:mm", "end_time": "HH:mm" 또는 "duration_minutes": 60, "auto_complete_on_event_end": true }
+- data 옵션 2 — 기존 이벤트 연결: { "id": "<reminder_id>", "event_id": "<google_event_id>", "auto_complete_on_event_end": true }
+- 링크된 이벤트가 끝나면 ToDo가 자동 완료된다 (auto_complete_on_event_end=true일 때).
+
+#### 자동 스케줄링 (제안 모드)
+- 사용자가 "오늘 ToDo 다 일정에 잡아줘", "이번 주 ToDo 시간 배치해줘"처럼 **여러 ToDo를 한 번에 스케줄링**해달라고 요청할 때 사용한다.
+- 다음 절차를 따른다:
+  1. 위에 제공된 일정 데이터(== 현재 등록된 일정 ==)에서 각 날짜의 빈 시간대를 추론한다. 기본 업무 시간은 09:00–18:00 (사용자 주요 지시사항이 다른 시간대를 명시하면 그걸 따른다).
+  2. 미완료 ToDo만 대상으로 한다 (is_completed=false). 이미 linked_event_id가 있는 ToDo는 건너뛴다.
+  3. 우선순위 high → 오전(가능하면 09:00–11:00), medium → 오전~오후, low → 오후 후반.
+  4. 기본 소요 시간: high=60분, medium=45분, low=30분. 사용자가 명시한 길이가 있으면 그걸 우선한다.
+  5. 회의와 회의 사이 15분 미만의 짧은 슬롯에는 큰 ToDo를 넣지 마라.
+  6. 점심 시간(12:00–13:00)은 비워둔다.
+  7. 같은 ToDo가 두 번 잡히지 않도록 한 번에 하나의 슬롯에만 매핑한다.
+- **반드시 \`requiresConfirmation: true\`로 설정한다.** 이는 일괄 작업이므로 사용자 확인이 필요하다.
+- response에는 제안 스케줄을 요약 (예: "9시 PR 리뷰(60분), 10시 보고서(45분), 14시 운동(30분)을 잡을게요.")
+- actions 배열은 link_reminder_event 액션의 배열이다 (각 ToDo당 하나).
+- 빈 슬롯이 부족하면 일부만 제안하고 부족한 ToDo는 response에서 언급하라 (강제로 점심 시간 등에 욱여넣지 마라).
 
 #### 특정 기간 일정 조회: query_events
 - 기본 제공되는 일정 데이터는 오늘~향후 7일뿐이다.

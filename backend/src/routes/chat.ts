@@ -132,7 +132,7 @@ async function executeAction(
     }
 
     case 'create_reminder': {
-      const { title, priority, due_date, notify, list_id } = action.data as Record<string, unknown>;
+      const { title, priority, due_date, notify, list_id, tags, checklist } = action.data as Record<string, unknown>;
       const listId = (list_id as string) || '@default';
 
       // Create in Google Tasks
@@ -151,6 +151,8 @@ async function executeAction(
           due_date: due_date || null,
           notify: notify || false,
           is_completed: false,
+          tags: Array.isArray(tags) ? tags : [],
+          checklist: Array.isArray(checklist) ? checklist : [],
           google_task_id: googleTask.id,
           google_list_id: listId,
         })
@@ -161,7 +163,7 @@ async function executeAction(
     }
 
     case 'update_reminder': {
-      const { id, title, description, due_date, priority, notify, ...rest } = action.data as Record<string, unknown>;
+      const { id, title, description, due_date, priority, notify, checklist, tags } = action.data as Record<string, unknown>;
 
       // Fetch existing for google_task_id
       const { data: existing } = await supabaseAdmin
@@ -188,6 +190,8 @@ async function executeAction(
       if (due_date !== undefined) updateFields.due_date = due_date;
       if (priority !== undefined) updateFields.priority = priority;
       if (notify !== undefined) updateFields.notify = notify;
+      if (checklist !== undefined) updateFields.checklist = checklist;
+      if (tags !== undefined && Array.isArray(tags)) updateFields.tags = tags;
 
       const { data: reminder, error } = await supabaseAdmin
         .from('reminders')
@@ -198,6 +202,111 @@ async function executeAction(
         .single();
       if (error) throw error;
       return { type: 'reminder_updated', data: reminder };
+    }
+
+    case 'set_reminder_status': {
+      const { id, status } = action.data as Record<string, unknown>;
+      const newStatus = status as 'not_started' | 'in_progress' | 'completed';
+      const isCompleted = newStatus === 'completed';
+
+      const { data: existing } = await supabaseAdmin
+        .from('reminders')
+        .select('google_task_id, google_list_id, started_at, completed_at')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .single();
+
+      if (existing?.google_task_id && existing?.google_list_id) {
+        await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, {
+          status: isCompleted ? 'completed' : 'needsAction',
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      const update: Record<string, unknown> = {
+        status: newStatus,
+        is_completed: isCompleted,
+        updated_at: nowIso,
+      };
+      if (newStatus === 'in_progress' && !existing?.started_at) update.started_at = nowIso;
+      if (isCompleted) update.completed_at = existing?.completed_at ?? nowIso;
+      else if (newStatus === 'not_started') {
+        update.completed_at = null;
+        update.started_at = null;
+      }
+
+      const { data: reminder, error } = await supabaseAdmin
+        .from('reminders')
+        .update(update)
+        .eq('id', id)
+        .eq('user_id', userId)
+        .select()
+        .single();
+      if (error) throw error;
+      return { type: 'reminder_status_updated', data: reminder };
+    }
+
+    case 'link_reminder_event': {
+      const {
+        id,
+        event_id,
+        date,
+        start_time,
+        end_time,
+        duration_minutes,
+        auto_complete_on_event_end,
+      } = action.data as Record<string, unknown>;
+
+      const { data: existing } = await supabaseAdmin
+        .from('reminders')
+        .select('id, title, description')
+        .eq('id', id)
+        .eq('user_id', userId)
+        .single();
+      if (!existing) throw new Error('Reminder not found');
+
+      let linkedEventId = event_id as string | undefined;
+
+      if (!linkedEventId) {
+        if (!date || !start_time) throw new Error('event_id 또는 date+start_time이 필요합니다');
+        let resolvedEnd = end_time as string | undefined;
+        if (!resolvedEnd) {
+          const minutes = (duration_minutes as number) ?? 60;
+          const [h, m] = (start_time as string).split(':').map(Number);
+          const startMin = h * 60 + m;
+          const endMin = Math.min(startMin + minutes, 24 * 60 - 1);
+          const eh = Math.floor(endMin / 60);
+          const em = endMin % 60;
+          resolvedEnd = `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
+        }
+        const calendar = await getCalendar();
+        const created = await calendar.events.insert({
+          calendarId: 'primary',
+          requestBody: {
+            summary: existing.title,
+            description: existing.description ?? undefined,
+            start: { dateTime: `${date}T${start_time}:00`, timeZone: 'Asia/Seoul' },
+            end: { dateTime: `${date}T${resolvedEnd}:00`, timeZone: 'Asia/Seoul' },
+          },
+        });
+        linkedEventId = created.data.id ?? undefined;
+      }
+
+      if (!linkedEventId) throw new Error('Failed to obtain event id');
+
+      const { data: reminder, error } = await supabaseAdmin
+        .from('reminders')
+        .update({
+          linked_event_id: linkedEventId,
+          auto_complete_on_event_end: (auto_complete_on_event_end as boolean) ?? true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('user_id', userId)
+        .select()
+        .single();
+      if (error) throw error;
+      return { type: 'reminder_linked', data: reminder };
     }
 
     case 'delete_reminder': {
@@ -519,10 +628,10 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     let calendarClient: calendar_v3.Calendar | undefined;
     let tasksApiClient: tasks_v1.Tasks | undefined;
     const hasCalendarActions = aiResponse.actions.some(
-      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event' || a.type === 'link_reminder_event'
     );
     const hasTaskActions = aiResponse.actions.some(
-      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder'].includes(a.type)
+      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder', 'set_reminder_status', 'link_reminder_event'].includes(a.type)
     );
     if (hasCalendarActions) {
       try {
@@ -581,6 +690,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     const SUCCESS_TYPES = new Set([
       'event_created', 'event_updated', 'event_deleted',
       'reminder_created', 'reminder_updated', 'reminder_deleted', 'reminder_completed',
+      'reminder_status_updated', 'reminder_linked',
     ]);
     const hasSuccessfulScheduleAction = actionResults.some((r) => SUCCESS_TYPES.has(r.type));
     if (hasSuccessfulScheduleAction) {
@@ -647,10 +757,10 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
     let calendarClient: calendar_v3.Calendar | undefined;
     let tasksApiClient: tasks_v1.Tasks | undefined;
     const hasCalendarActions = actions.some(
-      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event'
+      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event' || a.type === 'link_reminder_event'
     );
     const hasTaskActions = actions.some(
-      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder'].includes(a.type)
+      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder', 'set_reminder_status', 'link_reminder_event'].includes(a.type)
     );
     if (hasCalendarActions) {
       try {
