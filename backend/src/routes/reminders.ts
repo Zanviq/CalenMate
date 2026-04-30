@@ -390,7 +390,24 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
 
     const newCompleted = !currentCompleted;
 
-    // Update Supabase first (fast) and respond immediately
+    // Sync Google Tasks first so it stays the source of truth for completion.
+    // If Google fails, do NOT mutate Supabase — that prevents a "snap-back" on the
+    // next list fetch (which uses Google Task status to override merged is_completed).
+    if (googleTaskId && googleListId) {
+      try {
+        await updateGoogleTask(
+          req.userId!,
+          googleListId,
+          googleTaskId,
+          { status: newCompleted ? 'completed' : 'needsAction' },
+        );
+      } catch (err) {
+        console.error('Google Tasks completion sync failed:', err);
+        res.status(502).json({ error: 'Google Tasks 동기화에 실패했습니다. 잠시 후 다시 시도해주세요.' });
+        return;
+      }
+    }
+
     const { data: reminder, error } = await supabaseAdmin
       .from('reminders')
       .update({
@@ -407,18 +424,7 @@ router.patch('/:id/complete', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Respond immediately, sync Google Tasks in background
     res.json(reminder);
-
-    // Fire-and-forget Google Tasks sync
-    if (googleTaskId && googleListId) {
-      updateGoogleTask(
-        req.userId!,
-        googleListId,
-        googleTaskId,
-        { status: newCompleted ? 'completed' : 'needsAction' },
-      ).catch((err) => console.error('Google Tasks sync failed:', err));
-    }
   } catch {
     res.status(500).json({ error: 'Failed to toggle reminder completion' });
   }

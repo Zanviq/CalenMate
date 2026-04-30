@@ -39,6 +39,14 @@ const createReminderSchema = z.object({
 
 type CreateReminderForm = z.infer<typeof createReminderSchema>;
 
+// Format a Date as `YYYY-MM-DD` in the user's local timezone (avoids UTC day shift).
+function toLocalDateString(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 interface CreateReminderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -148,7 +156,7 @@ export function CreateReminderDialog({
                       mode="single"
                       selected={field.value ? new Date(field.value) : undefined}
                       onSelect={(date) =>
-                        field.onChange(date ? date.toISOString() : undefined)
+                        field.onChange(date ? toLocalDateString(date) : undefined)
                       }
                     />
                   </PopoverContent>

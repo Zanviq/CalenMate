@@ -24,8 +24,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   loading: true,
 
   initialize: () => {
-    let initialized = false;
-
+    // `onAuthStateChange` fires an INITIAL_SESSION event right after subscription,
+    // which means a manual getSession() call would race with it and run loadUser
+    // twice on every mount. We rely on the listener for the initial load and
+    // avoid the duplicate fetch.
     const loadUser = async (session: Session | null) => {
       try {
         if (session?.user) {
@@ -44,18 +46,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({ user: null });
       } finally {
         set({ loading: false });
-        initialized = true;
       }
     };
 
-    // Initial session check
-    supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
-      if (!initialized) {
-        loadUser(session);
-      }
-    });
-
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event: string, session: Session | null) => {
         loadUser(session);

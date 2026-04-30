@@ -68,14 +68,21 @@ api.interceptors.response.use(
       cachedAccessToken = null;
       tokenExpiresAt = 0;
 
-      const supabase = getSupabase();
-      const { data: { session } } = await supabase.auth.refreshSession();
+      try {
+        const supabase = getSupabase();
+        const { data: { session } } = await supabase.auth.refreshSession();
 
-      if (session?.access_token) {
-        cachedAccessToken = session.access_token;
-        tokenExpiresAt = Date.now() + TOKEN_CACHE_MS;
-        originalRequest.headers.Authorization = `Bearer ${session.access_token}`;
-        return api(originalRequest);
+        if (session?.access_token) {
+          cachedAccessToken = session.access_token;
+          tokenExpiresAt = Date.now() + TOKEN_CACHE_MS;
+          originalRequest.headers.Authorization = `Bearer ${session.access_token}`;
+          return api(originalRequest);
+        }
+      } catch (refreshErr) {
+        // Refresh itself failed (network, revoked, etc.) — surface the original
+        // 401 so the caller can route the user to /login rather than getting a
+        // confusing "refresh failed" error.
+        console.warn('[api] Token refresh failed; rejecting with original 401', refreshErr);
       }
     }
 

@@ -74,7 +74,17 @@ export async function getOAuth2Client(userId: string): Promise<OAuth2Client> {
       if (pendingTokens.access_token) update.google_access_token = pendingTokens.access_token;
       if (pendingTokens.refresh_token) update.google_refresh_token = pendingTokens.refresh_token;
       pendingTokens = {};
-      await supabaseAdmin.from('profiles').update(update).eq('id', userId);
+      try {
+        const { error } = await supabaseAdmin.from('profiles').update(update).eq('id', userId);
+        if (error) {
+          console.error('[google-auth] Failed to persist refreshed tokens:', error);
+        }
+      } catch (err) {
+        // Catch to prevent unhandled rejection from a deferred timer.
+        // Next request will fall back to whatever tokens are still in DB; if they
+        // are stale, googleapis will emit invalid_grant and trigger handleInvalidGrant.
+        console.error('[google-auth] Token persistence threw:', err);
+      }
     }, 500);
   });
 
@@ -89,12 +99,32 @@ export async function getOAuth2Client(userId: string): Promise<OAuth2Client> {
 /**
  * Check if an error is an invalid_grant error (expired/revoked tokens).
  * When detected, invalidates the auth cache so the next call creates a fresh client.
+ *
+ * googleapis/google-auth-library may surface invalid_grant in any of:
+ *  - err.message (Error instance)
+ *  - err.code (string)
+ *  - err.response.data.error (axios-style)
+ *  - plain object thrown without Error prototype
+ * so we defensively check all of them.
  */
 export function isInvalidGrantError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const message = err.message || '';
-  const code = (err as { code?: string }).code || '';
-  return message.includes('invalid_grant') || code === 'invalid_grant';
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    message?: unknown;
+    code?: unknown;
+    response?: { data?: { error?: unknown; error_description?: unknown } };
+  };
+  const message = typeof e.message === 'string' ? e.message : '';
+  const code = typeof e.code === 'string' ? e.code : '';
+  const responseError = typeof e.response?.data?.error === 'string' ? e.response!.data!.error : '';
+  const responseDesc =
+    typeof e.response?.data?.error_description === 'string' ? e.response!.data!.error_description : '';
+  return (
+    message.includes('invalid_grant') ||
+    code === 'invalid_grant' ||
+    responseError === 'invalid_grant' ||
+    responseDesc.includes('invalid_grant')
+  );
 }
 
 /**

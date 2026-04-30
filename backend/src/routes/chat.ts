@@ -299,13 +299,14 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     // Fetch all context data in parallel for maximum speed
     const [chatHistoryResult, instructionsResult, calendarResult, remindersResult] =
       await Promise.all([
-        // 1. Chat history
+        // 1. Chat history (tiebreaker by role for stable ordering on equal timestamps)
         supabaseAdmin
           .from('chat_messages')
           .select('role, content')
           .eq('user_id', req.userId)
           .eq('context', context)
           .order('created_at', { ascending: false })
+          .order('role', { ascending: true })
           .limit(40),
 
         // 2. User instructions
@@ -336,9 +337,11 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
               const msg = await handleInvalidGrant(req.userId!);
               return { events: [], error: msg, isAuthError: true };
             }
+            // Don't leak raw provider error strings (e.g. raw "invalid_grant" tokens) to the AI/user
+            console.error('Calendar fetch error in chat context:', err);
             return {
               events: [],
-              error: err instanceof Error ? err.message : 'Google Calendar 연결 실패',
+              error: 'Google Calendar 연결 실패',
             };
           }
         })(),
@@ -368,9 +371,10 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     // If Google auth is invalid, skip AI processing and return auth error directly
     if (isAuthError && calendarError) {
       const authErrorResponse = calendarError;
+      const now = new Date();
       const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
-        { user_id: req.userId, role: 'user', content: userMessage, context, metadata: {} },
-        { user_id: req.userId, role: 'assistant', content: authErrorResponse, context, metadata: {} },
+        { user_id: req.userId, role: 'user', content: userMessage, context, metadata: {}, created_at: now.toISOString() },
+        { user_id: req.userId, role: 'assistant', content: authErrorResponse, context, metadata: {}, created_at: new Date(now.getTime() + 1000).toISOString() },
       ]).select();
 
       const assistantMessage = savedMessages?.[1] ?? {
@@ -471,6 +475,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
 
     // If confirmation required, save actions as pending and return without executing
     if (aiResponse.requiresConfirmation && aiResponse.actions.length > 0) {
+      const now = new Date();
       const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
         {
           user_id: req.userId,
@@ -478,6 +483,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           content: userMessage,
           context,
           metadata: {},
+          created_at: now.toISOString(),
         },
         {
           user_id: req.userId,
@@ -485,6 +491,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           content: aiResponse.response,
           context,
           metadata: { pendingActions: aiResponse.actions, confirmationStatus: 'pending' },
+          created_at: new Date(now.getTime() + 1000).toISOString(),
         },
       ]).select();
 
@@ -521,47 +528,67 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       try {
         const { calendar } = await getCalendarClient(req.userId!);
         calendarClient = calendar;
-      } catch {
-        // Will fall back to per-action fetching
+      } catch (err) {
+        // Falls back to per-action fetching; log so deterministic failures
+        // (invalid_grant, quota) don't disappear silently.
+        console.warn('[chat] Calendar pre-fetch failed, falling back per-action:', err);
       }
     }
     if (hasTaskActions) {
       try {
         tasksApiClient = await getTasksClient(req.userId!);
-      } catch {
-        // Will fall back to per-action fetching
-      }
-    }
-
-    // Execute actions
-    const actionResults = [];
-    for (const action of aiResponse.actions) {
-      try {
-        const result = await executeAction(action, req.userId!, calendarClient, tasksApiClient);
-        actionResults.push(result);
       } catch (err) {
-        if (isInvalidGrantError(err)) {
-          const msg = await handleInvalidGrant(req.userId!);
-          actionResults.push({
-            type: `${action.type}_error`,
-            data: { error: msg },
-          });
-          // Skip remaining actions — all will fail with same auth error
-          break;
-        }
-        actionResults.push({
-          type: `${action.type}_error`,
-          data: { error: err instanceof Error ? err.message : 'Action failed' },
-        });
+        console.warn('[chat] Tasks pre-fetch failed, falling back per-action:', err);
       }
     }
 
-    // Invalidate summary cache if any schedule-changing actions were executed
-    if (hasCalendarActions || hasTaskActions) {
+    // Execute actions in parallel.
+    // Distinct event/reminder IDs are independent; concurrent execution is safe.
+    // invalid_grant is handled once after all results settle (same token error would repeat anyway).
+    const INVALID_GRANT_MARKER = '__CALENMATE_INVALID_GRANT__';
+    const actionResults = await Promise.all(
+      aiResponse.actions.map(async (action) => {
+        try {
+          return await executeAction(action, req.userId!, calendarClient, tasksApiClient);
+        } catch (err) {
+          if (isInvalidGrantError(err)) {
+            return {
+              type: `${action.type}_error`,
+              data: { error: INVALID_GRANT_MARKER },
+            };
+          }
+          return {
+            type: `${action.type}_error`,
+            data: { error: err instanceof Error ? err.message : 'Action failed' },
+          };
+        }
+      })
+    );
+
+    // Resolve invalid_grant once (token is shared across all actions)
+    if (actionResults.some((r) => (r.data as Record<string, unknown>)?.error === INVALID_GRANT_MARKER)) {
+      const msg = await handleInvalidGrant(req.userId!);
+      for (const r of actionResults) {
+        const data = r.data as Record<string, unknown> | null;
+        if (data && data.error === INVALID_GRANT_MARKER) {
+          data.error = msg;
+        }
+      }
+    }
+
+    // Invalidate summary cache only when at least one schedule-changing action actually succeeded.
+    // This avoids paying for re-summarization (Gemini call) when all actions failed.
+    const SUCCESS_TYPES = new Set([
+      'event_created', 'event_updated', 'event_deleted',
+      'reminder_created', 'reminder_updated', 'reminder_deleted', 'reminder_completed',
+    ]);
+    const hasSuccessfulScheduleAction = actionResults.some((r) => SUCCESS_TYPES.has(r.type));
+    if (hasSuccessfulScheduleAction) {
       invalidateSummaryCache(req.userId!);
     }
 
-    // Save chat messages
+    // Save chat messages (explicit timestamps to guarantee ordering on reload)
+    const now = new Date();
     const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
       {
         user_id: req.userId,
@@ -569,6 +596,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         content: userMessage,
         context,
         metadata: {},
+        created_at: now.toISOString(),
       },
       {
         user_id: req.userId,
@@ -576,6 +604,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         content: aiResponse.response,
         context,
         metadata: { actions: aiResponse.actions, results: actionResults },
+        created_at: new Date(now.getTime() + 1000).toISOString(),
       },
     ]).select();
 
@@ -627,12 +656,16 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
       try {
         const { calendar } = await getCalendarClient(req.userId!);
         calendarClient = calendar;
-      } catch { /* per-action fallback */ }
+      } catch (err) {
+        console.warn('[chat/execute] Calendar pre-fetch failed, falling back per-action:', err);
+      }
     }
     if (hasTaskActions) {
       try {
         tasksApiClient = await getTasksClient(req.userId!);
-      } catch { /* per-action fallback */ }
+      } catch (err) {
+        console.warn('[chat/execute] Tasks pre-fetch failed, falling back per-action:', err);
+      }
     }
 
     // Execute all actions
@@ -680,11 +713,16 @@ router.get('/history', async (req: AuthRequest, res: Response) => {
     const { context, limit: limitStr, before } = req.query;
     const limit = Math.min(Number(limitStr) || 50, 100);
 
+    // Order by created_at DESC, then role ASC as tiebreaker.
+    // Tiebreaker matters because a single chat exchange can have user/assistant rows
+    // with identical created_at if the DB column resolution drops sub-second precision.
+    // 'assistant' < 'user' alphabetically → after JS reverse(), user appears before assistant.
     let query = supabaseAdmin
       .from('chat_messages')
       .select('*', { count: 'exact' })
       .eq('user_id', req.userId)
       .order('created_at', { ascending: false })
+      .order('role', { ascending: true })
       .limit(limit);
 
     if (context) {

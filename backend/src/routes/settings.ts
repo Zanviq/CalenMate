@@ -16,6 +16,13 @@ const settingsSchema = z.object({
   language: z.enum(['ko', 'en']).optional(),
 });
 
+const DEFAULT_SETTINGS = {
+  theme: 'system',
+  defaultCalendarView: 'dayGridMonth',
+  defaultReminderPriority: 'medium',
+  language: 'ko',
+};
+
 // GET / - Get user settings
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
@@ -23,92 +30,55 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       .from('profiles')
       .select('settings')
       .eq('id', req.userId)
-      .single();
+      .maybeSingle();
 
-    if (error || !profile) {
-      res.status(404).json({ error: 'Profile not found' });
+    if (error) {
+      console.error('Settings read failed:', error);
+      res.status(500).json({ error: 'Failed to fetch settings' });
       return;
     }
 
-    // Return settings with defaults
-    const defaults = {
-      theme: 'system',
-      defaultCalendarView: 'dayGridMonth',
-      defaultReminderPriority: 'medium',
-      language: 'ko',
-    };
-
-    res.json({ ...defaults, ...(profile.settings || {}) });
-  } catch {
+    res.json({ ...DEFAULT_SETTINGS, ...((profile?.settings as Record<string, unknown>) || {}) });
+  } catch (err) {
+    console.error('Settings GET error:', err);
     res.status(500).json({ error: 'Failed to fetch settings' });
   }
 });
 
-// PATCH / - Update user settings (partial, atomic merge via PostgreSQL || operator)
+// PATCH / - Update user settings (partial merge)
 router.patch('/', validateBody(settingsSchema), async (req: AuthRequest, res: Response) => {
   try {
-    // Atomic merge: COALESCE(settings, '{}') || new_values
-    // This avoids read-then-write race conditions
-    const { data, error } = await supabaseAdmin.rpc('merge_user_settings', {
-      p_user_id: req.userId,
-      p_settings: req.body,
-    });
+    // Read existing settings (auto-create profile row if missing — first-time settings change)
+    const { data: profile, error: readError } = await supabaseAdmin
+      .from('profiles')
+      .select('settings')
+      .eq('id', req.userId)
+      .maybeSingle();
 
-    // Fallback if RPC doesn't exist: use read-then-write
-    if (error?.code === '42883') {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('settings')
-        .eq('id', req.userId)
-        .single();
-
-      if (!profile) {
-        res.status(404).json({ error: 'Profile not found' });
-        return;
-      }
-
-      const merged = { ...(profile.settings || {}), ...req.body };
-
-      const { data: updated, error: updateError } = await supabaseAdmin
-        .from('profiles')
-        .update({
-          settings: merged,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', req.userId)
-        .select('settings')
-        .single();
-
-      if (updateError) {
-        res.status(500).json({ error: 'Failed to update settings' });
-        return;
-      }
-
-      const defaults = {
-        theme: 'system',
-        defaultCalendarView: 'dayGridMonth',
-        defaultReminderPriority: 'medium',
-        language: 'ko',
-      };
-
-      res.json({ ...defaults, ...(updated.settings || {}) });
+    if (readError) {
+      console.error('Settings read failed:', readError);
+      res.status(500).json({ error: 'Failed to read settings' });
       return;
     }
 
-    if (error) {
+    const merged = { ...(profile?.settings || {}), ...req.body };
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from('profiles')
+      .update({ settings: merged, updated_at: new Date().toISOString() })
+      .eq('id', req.userId)
+      .select('settings')
+      .maybeSingle();
+
+    if (updateError) {
+      console.error('Settings update failed:', updateError);
       res.status(500).json({ error: 'Failed to update settings' });
       return;
     }
 
-    const defaults = {
-      theme: 'system',
-      defaultCalendarView: 'dayGridMonth',
-      defaultReminderPriority: 'medium',
-      language: 'ko',
-    };
-
-    res.json({ ...defaults, ...(data || {}) });
-  } catch {
+    res.json({ ...DEFAULT_SETTINGS, ...((updated?.settings as Record<string, unknown>) || merged) });
+  } catch (err) {
+    console.error('Settings PATCH error:', err);
     res.status(500).json({ error: 'Failed to update settings' });
   }
 });

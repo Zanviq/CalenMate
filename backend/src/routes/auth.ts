@@ -3,10 +3,79 @@ import { google } from 'googleapis';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { supabaseAdmin } from '../services/supabase';
+import { getOAuth2Client, isInvalidGrantError } from '../services/google-auth';
 
 const router = Router();
 
 router.use(authMiddleware);
+
+type ConnectionState =
+  | { connected: true }
+  | { connected: false; reason: 'not_linked' | 'invalid_grant' | 'forbidden' | 'unknown'; message: string };
+
+// GET /connection-status - Probe Google Calendar + Tasks API reachability for the user
+router.get('/connection-status', async (req: AuthRequest, res: Response) => {
+  try {
+    let oauth2Client;
+    try {
+      oauth2Client = await getOAuth2Client(req.userId!);
+    } catch {
+      const notLinked: ConnectionState = {
+        connected: false,
+        reason: 'not_linked',
+        message: 'Google 계정이 연결되지 않았습니다.',
+      };
+      res.json({ googleLinked: false, calendar: notLinked, tasks: notLinked });
+      return;
+    }
+
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const tasks = google.tasks({ version: 'v1', auth: oauth2Client });
+
+    const probe = async (op: () => Promise<unknown>): Promise<ConnectionState> => {
+      try {
+        await op();
+        return { connected: true };
+      } catch (err: unknown) {
+        if (isInvalidGrantError(err)) {
+          return {
+            connected: false,
+            reason: 'invalid_grant',
+            message: 'Google 인증이 만료되었습니다. 다시 로그인해주세요.',
+          };
+        }
+        const e = err as { code?: number | string; message?: string };
+        const code = typeof e.code === 'number' ? e.code : Number(e.code);
+        if (code === 401 || code === 403) {
+          return {
+            connected: false,
+            reason: 'forbidden',
+            message: '권한이 부족합니다. 다시 로그인하여 권한을 부여해주세요.',
+          };
+        }
+        return {
+          connected: false,
+          reason: 'unknown',
+          message: e.message || '연결 확인 중 오류가 발생했습니다.',
+        };
+      }
+    };
+
+    const [calendarStatus, tasksStatus] = await Promise.all([
+      probe(() => calendar.calendarList.list({ maxResults: 1 })),
+      probe(() => tasks.tasklists.list({ maxResults: 1 })),
+    ]);
+
+    res.json({
+      googleLinked: true,
+      calendar: calendarStatus,
+      tasks: tasksStatus,
+    });
+  } catch (err) {
+    console.error('connection-status failed:', err);
+    res.status(500).json({ error: 'Failed to check connection status' });
+  }
+});
 
 // GET /me - Get current user profile
 router.get('/me', async (req: AuthRequest, res: Response) => {

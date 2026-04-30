@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Plus, List } from 'lucide-react';
+import { toast } from 'sonner';
 import api from '@/lib/api';
 import type { TaskList } from '@/types';
 import { Input } from '@/components/ui/input';
@@ -41,6 +42,9 @@ export function TaskListSelector({ value, onChange }: TaskListSelectorProps) {
       setCreating(false);
       setNewListTitle('');
       setOpen(false);
+    },
+    onError: () => {
+      toast.error('목록 생성에 실패했습니다');
     },
   });
 
