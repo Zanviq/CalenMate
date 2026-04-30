@@ -168,7 +168,7 @@ export default function SettingsPage() {
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
                 Google 동기화
               </CardTitle>
-              <CardDescription>캘린더와 리마인더(Tasks) 연동 상태입니다.</CardDescription>
+              <CardDescription>캘린더와 ToDo(Tasks) 연동 상태입니다.</CardDescription>
             </div>
             <Button
               variant="ghost"
@@ -191,7 +191,7 @@ export default function SettingsPage() {
           <Separator />
           <ConnectionRow
             icon={<ListTodo className="h-4 w-4 text-zinc-500" />}
-            label="Google Tasks (리마인더)"
+            label="Google Tasks (ToDo)"
             state={connection?.tasks}
             loading={connectionFetching && !connection}
           />
@@ -204,7 +204,7 @@ export default function SettingsPage() {
             )}
           {connection && !connection.googleLinked && (
             <p className="text-xs text-zinc-400">
-              Google 계정으로 다시 로그인하면 캘린더/리마인더가 자동으로 연동됩니다.
+              Google 계정으로 다시 로그인하면 캘린더/ToDo가 자동으로 연동됩니다.
             </p>
           )}
         </CardContent>
@@ -283,9 +283,9 @@ export default function SettingsPage() {
             <div className="space-y-0.5">
               <p className="text-sm font-medium flex items-center gap-1.5">
                 <Flag className="h-3.5 w-3.5" />
-                기본 리마인더 우선순위
+                기본 ToDo 우선순위
               </p>
-              <p className="text-xs text-muted-foreground">새 리마인더의 기본 우선순위</p>
+              <p className="text-xs text-muted-foreground">새 ToDo의 기본 우선순위</p>
             </div>
             <Select
               value={settings?.defaultReminderPriority ?? 'medium'}

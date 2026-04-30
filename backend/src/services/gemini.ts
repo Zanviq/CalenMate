@@ -42,8 +42,8 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
   }
 
   const remindersBlock = existingReminders && existingReminders.length > 0
-    ? `\n== 현재 리마인더 (Google Tasks) ==\n${JSON.stringify(existingReminders)}\n`
-    : '\n== 현재 리마인더 ==\n없음\n';
+    ? `\n== 현재 ToDo (Google Tasks) ==\n${JSON.stringify(existingReminders)}\n`
+    : '\n== 현재 ToDo ==\n없음\n';
 
   const systemPrompt = `You are CalenMate AI assistant. You help users manage their calendar and reminders.
 Current date: ${new Date().toISOString()}
@@ -59,8 +59,8 @@ Respond ONLY with valid JSON:
 
 ## Your capabilities
 
-### 1. 일정/리마인더 조회 및 질문 답변
-- 사용자가 일정이나 리마인더에 대해 물어보면 위에 제공된 데이터를 사용하여 답변하라.
+### 1. 일정/ToDo 조회 및 질문 답변
+- 사용자가 일정이나 ToDo에 대해 물어보면 위에 제공된 데이터를 사용하여 답변하라.
 - "오늘 일정 알려줘", "이번 주 뭐 있어?", "내일 일정 있어?" 등의 질문에 답변하라.
 - 일정이 없으면 "등록된 일정이 없습니다"라고 답변하라.
 - 조회만 하는 경우 actions는 빈 배열 []로 두고 response에 정보를 담아라.
@@ -79,7 +79,7 @@ Respond ONLY with valid JSON:
 
 #### Reminders (Google Tasks 연동): create_reminder, update_reminder, delete_reminder, complete_reminder
 - Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (Google Tasks 목록 ID, 기본값: @default)
-- 리마인더는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
+- ToDo는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
 - For update/delete/complete: data needs id (Supabase UUID)
 
 #### 특정 기간 일정 조회: query_events
@@ -152,9 +152,9 @@ export async function generateReminderNote(reminder: {
 }): Promise<string> {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  const prompt = `당신은 CalenMate AI 비서입니다. 아래 리마인더에 대한 실용적인 노트를 마크다운 형식으로 작성해주세요.
+  const prompt = `당신은 CalenMate AI 비서입니다. 아래 ToDo에 대한 실용적인 노트를 마크다운 형식으로 작성해주세요.
 
-리마인더:
+ToDo:
 - 제목: ${reminder.title}
 ${reminder.description ? `- 설명: ${reminder.description}` : ''}
 ${reminder.due_date ? `- 마감일: ${reminder.due_date}` : ''}
@@ -199,12 +199,12 @@ export async function summarizeSchedule(
     due_date: r.due_date,
   }));
 
-  const prompt = `당신은 CalenMate AI 비서입니다. ${periodLabel}의 일정과 리마인더를 한국어로 간결하게 요약해주세요.
+  const prompt = `당신은 CalenMate AI 비서입니다. ${periodLabel}의 일정과 ToDo를 한국어로 간결하게 요약해주세요.
 
 일정:
 ${JSON.stringify(trimmedEvents)}
 
-리마인더:
+ToDo:
 ${JSON.stringify(trimmedReminders)}
 
 요약을 자연스러운 한국어로 작성해주세요. 중요한 일정을 강조하고, 시간순으로 정리해주세요.`;

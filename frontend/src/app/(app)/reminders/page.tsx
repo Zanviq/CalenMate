@@ -94,7 +94,7 @@ export default function RemindersPage() {
       if (ctx?.previous) {
         queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
-      toast.error('리마인더 상태 변경에 실패했습니다');
+      toast.error('ToDo 상태 변경에 실패했습니다');
     },
     onSuccess: (updated) => {
       // Patch the confirmed server state into all cached queries (no refetch needed)
@@ -123,7 +123,7 @@ export default function RemindersPage() {
       if (ctx?.previous) {
         queryClient.setQueryData(['reminders', filter, selectedListId], ctx.previous);
       }
-      toast.error('리마인더 삭제에 실패했습니다');
+      toast.error('ToDo 삭제에 실패했습니다');
     },
     onSettled: () => {
       setDeleteTarget(null);
@@ -162,7 +162,7 @@ export default function RemindersPage() {
       {/* Header */}
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">리마인더</h1>
+          <h1 className="text-xl font-bold">ToDo</h1>
           <TaskListSelector value={selectedListId} onChange={setSelectedListId} />
         </div>
         <Button size="sm" className="gap-1" onClick={() => setDialogOpen(true)}>
@@ -200,10 +200,10 @@ export default function RemindersPage() {
               <ListTodo className="mx-auto mb-3 h-10 w-10 text-zinc-300" />
               <p className="text-sm">
                 {filter === 'completed'
-                  ? '완료된 리마인더가 없습니다.'
+                  ? '완료된 ToDo가 없습니다.'
                   : filter === 'active'
-                    ? '진행 중인 리마인더가 없습니다.'
-                    : '아직 리마인더가 없습니다.'}
+                    ? '진행 중인 ToDo가 없습니다.'
+                    : '아직 ToDo가 없습니다.'}
               </p>
               <p className="mt-1 text-xs">
                 AI 채팅으로 &ldquo;할 일 추가해줘&rdquo;라고 말해보세요.

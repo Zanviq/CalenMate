@@ -177,7 +177,7 @@ export const commands: CommandDefinition[] = [
   },
   {
     name: 'reminders',
-    description: '진행 중인 리마인더 목록 보기',
+    description: '진행 중인 ToDo 목록 보기',
     execute: async (context) => {
       try {
         const { data } = await api.get<
@@ -185,7 +185,7 @@ export const commands: CommandDefinition[] = [
         >('/api/reminders', { params: { status: 'active' } });
         if (data.length === 0) {
           return {
-            message: systemMessage('진행 중인 리마인더가 없습니다.', context),
+            message: systemMessage('진행 중인 ToDo가 없습니다.', context),
           };
         }
         const priorityLabel: Record<string, string> = { high: '🔴', medium: '🟡', low: '🔵' };
@@ -198,13 +198,13 @@ export const commands: CommandDefinition[] = [
         });
         return {
           message: systemMessage(
-            `진행 중인 리마인더 (${data.length}건):\n${lines.join('\n')}`,
+            `진행 중인 ToDo (${data.length}건):\n${lines.join('\n')}`,
             context,
           ),
         };
       } catch {
         return {
-          message: systemMessage('리마인더를 불러오는 데 실패했습니다.', context),
+          message: systemMessage('ToDo를 불러오는 데 실패했습니다.', context),
         };
       }
     },

@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 export const metadata = {
   title: 'CalenMate — AI로 일정과 할 일을 똑똑하게',
   description:
-    'Google 캘린더 / Tasks와 연동되는 AI 일정 관리 앱. 채팅으로 일정을 만들고, 리마인더를 정리하고, AI가 노트를 작성합니다.',
+    'Google 캘린더 / Tasks와 연동되는 AI 일정 관리 앱. 채팅으로 일정을 만들고, ToDo를 정리하고, AI가 노트를 작성합니다.',
 };
 
 const features = [
@@ -27,22 +27,22 @@ const features = [
   {
     icon: Sparkles,
     title: 'AI 채팅 어시스턴트',
-    desc: 'Gemini 2.5 Flash가 자연어로 일정·리마인더를 만들고 정리합니다. "내일 오후 3시 회의 잡아줘"처럼 말하세요.',
+    desc: 'Gemini 2.5 Flash가 자연어로 일정·ToDo를 만들고 정리합니다. "내일 오후 3시 회의 잡아줘"처럼 말하세요.',
   },
   {
     icon: ListTodo,
-    title: 'Google Tasks 리마인더',
-    desc: '리마인더가 Google Tasks와 연동되어 모바일/웹 어디서나 동기화됩니다. 우선순위·색상·알림도 함께.',
+    title: 'Google Tasks ToDo',
+    desc: 'ToDo가 Google Tasks와 연동되어 모바일/웹 어디서나 동기화됩니다. 우선순위·색상·알림도 함께.',
   },
   {
     icon: MessageSquare,
-    title: '리마인더에 AI 노트',
-    desc: '각 리마인더에 마크다운 노트를 작성하거나, AI에게 노트 초안을 부탁할 수 있습니다.',
+    title: 'ToDo에 AI 노트',
+    desc: '각 ToDo에 마크다운 노트를 작성하거나, AI에게 노트 초안을 부탁할 수 있습니다.',
   },
   {
     icon: Zap,
     title: '맥락 기반 응답',
-    desc: '홈/캘린더/리마인더 탭에 따라 AI가 다른 컨텍스트로 응답합니다. 사용자 지침도 영구 저장됩니다.',
+    desc: '홈/캘린더/ToDo 탭에 따라 AI가 다른 컨텍스트로 응답합니다. 사용자 지침도 영구 저장됩니다.',
   },
   {
     icon: MoonStar,
@@ -123,7 +123,7 @@ export default function LandingPage() {
             <p className="mt-6 text-base text-muted-foreground sm:text-lg">
               Google 캘린더와 Tasks에 그대로 연동되는 AI 일정 관리 앱.
               <br className="hidden sm:block" />
-              채팅 한 줄로 일정을 만들고, 리마인더를 정리하고, 노트를 받으세요.
+              채팅 한 줄로 일정을 만들고, ToDo를 정리하고, 노트를 받으세요.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link

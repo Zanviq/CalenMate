@@ -125,7 +125,7 @@ export default function HomePage() {
       if (ctx?.previous) {
         queryClient.setQueryData(['reminders'], ctx.previous);
       }
-      toast.error('리마인더 상태 변경에 실패했습니다');
+      toast.error('ToDo 상태 변경에 실패했습니다');
     },
     onSuccess: (updated) => {
       queryClient.setQueriesData<Reminder[]>({ queryKey: ['reminders'] }, (old) =>

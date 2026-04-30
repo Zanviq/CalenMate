@@ -208,7 +208,7 @@ export default function ReminderDetailPage() {
       router.push('/reminders');
     },
     onError: () => {
-      toast.error('리마인더 삭제에 실패했습니다');
+      toast.error('ToDo 삭제에 실패했습니다');
     },
   });
 
@@ -255,7 +255,7 @@ export default function ReminderDetailPage() {
   if (!reminder) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
-        <p className="text-sm">리마인더를 찾을 수 없습니다.</p>
+        <p className="text-sm">ToDo를 찾을 수 없습니다.</p>
         <Button variant="outline" size="sm" onClick={() => router.push('/reminders')}>
           목록으로 돌아가기
         </Button>
@@ -312,7 +312,7 @@ export default function ReminderDetailPage() {
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>리마인더 삭제</AlertDialogTitle>
+                <AlertDialogTitle>ToDo 삭제</AlertDialogTitle>
                 <AlertDialogDescription>
                   &ldquo;{reminder.title}&rdquo;을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.
                 </AlertDialogDescription>
@@ -518,7 +518,7 @@ export default function ReminderDetailPage() {
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b px-6 py-3">
               <p className="text-sm text-muted-foreground">
-                리마인더에 대한 메모를 자유롭��� 작성하세요.
+                ToDo에 대한 메모를 자유롭��� 작성하세요.
               </p>
               <div className="flex items-center gap-2">
                 <Button

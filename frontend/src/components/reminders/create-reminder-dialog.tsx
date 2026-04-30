@@ -105,7 +105,7 @@ export function CreateReminderDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>리마인더 추가</DialogTitle>
+          <DialogTitle>ToDo 추가</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           {/* Title */}

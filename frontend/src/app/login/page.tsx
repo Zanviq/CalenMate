@@ -53,7 +53,7 @@ export default function LoginPage() {
               </span>
             </h2>
             <p className="max-w-md text-sm text-white/70">
-              Google 캘린더와 Tasks가 그대로 연동된 AI 일정 관리. 한 줄 채팅으로 일정과 리마인더를 만들고, 노트를 받으세요.
+              Google 캘린더와 Tasks가 그대로 연동된 AI 일정 관리. 한 줄 채팅으로 일정과 ToDo를 만들고, 노트를 받으세요.
             </p>
           </div>
 
@@ -87,7 +87,7 @@ export default function LoginPage() {
             </li>
             <li className="flex items-start gap-2.5">
               <ListTodo className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
-              <span>Google Tasks 리마인더 + AI 노트</span>
+              <span>Google Tasks ToDo + AI 노트</span>
             </li>
             <li className="flex items-start gap-2.5">
               <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
