@@ -355,6 +355,12 @@ export default function LandingPage() {
             <span>CalenMate © {new Date().getFullYear()}</span>
           </div>
           <div className="flex items-center gap-4">
+            <Link href="/privacy" className="hover:text-foreground">
+              개인정보처리방침
+            </Link>
+            <Link href="/terms" className="hover:text-foreground">
+              서비스 약관
+            </Link>
             <Link href="/login" className="hover:text-foreground">
               로그인
             </Link>
