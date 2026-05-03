@@ -32,7 +32,11 @@ export async function updateSession(request: NextRequest) {
   const path = request.nextUrl.pathname;
   // Public routes that don't require authentication
   const isPublicRoute =
-    path === '/' || path.startsWith('/login') || path.startsWith('/auth');
+    path === '/' ||
+    path.startsWith('/login') ||
+    path.startsWith('/auth') ||
+    path.startsWith('/privacy') ||
+    path.startsWith('/terms');
 
   // 로그인하지 않은 사용자는 공개 경로 외에는 /login으로 리다이렉트
   if (!user && !isPublicRoute) {

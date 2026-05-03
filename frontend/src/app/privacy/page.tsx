@@ -7,7 +7,7 @@ export const metadata = {
 };
 
 const LAST_UPDATED = '2026년 5월 3일';
-const CONTACT_EMAIL = 'jaemin.seo2111@gmail.com';
+const CONTACT_EMAIL = 'zanviq.dev@gmail.com';
 
 export default function PrivacyPage() {
   return (
