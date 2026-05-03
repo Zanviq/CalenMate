@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   Calendar,
   Check,
@@ -32,9 +33,14 @@ export default function LoginPage() {
       <aside className="relative hidden overflow-hidden border-r border-border/60 bg-muted/30 lg:flex lg:flex-col lg:justify-between lg:p-12">
         {/* Brand */}
         <div className="flex items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-background">
-            <Calendar className="h-4 w-4" />
-          </span>
+          <Image
+            src="/logo.png"
+            alt="CalenMate"
+            width={28}
+            height={28}
+            className="h-7 w-7 rounded-lg"
+            priority
+          />
           <span className="text-sm font-semibold tracking-tight">CalenMate</span>
         </div>
 
@@ -146,9 +152,13 @@ export default function LoginPage() {
           </Link>
           {/* Mobile-only mini brand */}
           <Link href="/" className="flex items-center gap-1.5 lg:hidden">
-            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-foreground text-background">
-              <Calendar className="h-3.5 w-3.5" />
-            </span>
+            <Image
+              src="/logo.png"
+              alt="CalenMate"
+              width={24}
+              height={24}
+              className="h-6 w-6 rounded-md"
+            />
             <span className="text-sm font-semibold tracking-tight">CalenMate</span>
           </Link>
         </div>

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   Calendar,
   CheckSquare,
@@ -88,9 +89,14 @@ export default function LandingPage() {
       <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
           <Link href="/" className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-background">
-              <Calendar className="h-4 w-4" />
-            </span>
+            <Image
+              src="/logo.png"
+              alt="CalenMate"
+              width={28}
+              height={28}
+              className="h-7 w-7 rounded-lg"
+              priority
+            />
             <span className="text-sm font-semibold tracking-tight">CalenMate</span>
           </Link>
           <nav className="flex items-center gap-1">
@@ -349,9 +355,13 @@ export default function LandingPage() {
       <footer className="border-t border-border/60">
         <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:px-6">
           <div className="flex items-center gap-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded bg-foreground text-background">
-              <Calendar className="h-3 w-3" />
-            </span>
+            <Image
+              src="/logo.png"
+              alt="CalenMate"
+              width={20}
+              height={20}
+              className="h-5 w-5 rounded"
+            />
             <span>CalenMate © {new Date().getFullYear()}</span>
           </div>
           <div className="flex items-center gap-4">

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Calendar } from 'lucide-react';
+import Image from 'next/image';
 
 export const metadata = {
   title: '개인정보처리방침 — CalenMate',
@@ -15,9 +15,14 @@ export default function PrivacyPage() {
       <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-4 sm:px-6">
           <Link href="/" className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-background">
-              <Calendar className="h-4 w-4" />
-            </span>
+            <Image
+              src="/logo.png"
+              alt="CalenMate"
+              width={28}
+              height={28}
+              className="h-7 w-7 rounded-lg"
+              priority
+            />
             <span className="text-sm font-semibold tracking-tight">CalenMate</span>
           </Link>
         </div>

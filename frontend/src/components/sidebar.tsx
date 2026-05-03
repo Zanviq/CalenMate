@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import { Home, Calendar, CheckSquare, BarChart3, Settings, LogOut, User } from 'lucide-react';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -49,8 +50,15 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-full w-16 flex-col items-center border-r border-zinc-200 bg-zinc-50 py-4 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-200 text-sm font-bold text-zinc-800 dark:bg-zinc-800 dark:text-white">
-        CM
+      <div className="mb-4 flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl">
+        <Image
+          src="/logo.png"
+          alt="CalenMate"
+          width={40}
+          height={40}
+          className="h-10 w-10 object-cover"
+          priority
+        />
       </div>
 
       <Separator className="mx-auto mb-4 w-8 bg-zinc-200 dark:bg-zinc-700" />
