@@ -16,19 +16,19 @@ import { cn } from '@/lib/utils';
 export const metadata = {
   title: 'CalenMate — 일정과 할 일을 한 곳에',
   description:
-    'Google 캘린더와 Tasks를 한 화면에서. 채팅으로 일정과 ToDo를 정리하고, 노트를 함께 관리합니다.',
+    '캘린더와 ToDo를 한 화면에서. 채팅으로 일정과 ToDo를 정리하고, 노트를 함께 관리합니다.',
 };
 
 const features = [
   {
     icon: Calendar,
-    title: 'Google 캘린더 동기화',
-    desc: '추가, 수정, 삭제가 Google 캘린더와 즉시 동기화됩니다. 별도의 데이터 이전 없이 그대로 사용하세요.',
+    title: '캘린더',
+    desc: '월간·주간·일간 보기에서 일정을 추가, 수정, 삭제할 수 있습니다.',
   },
   {
     icon: ListTodo,
-    title: 'Google Tasks ToDo',
-    desc: 'ToDo가 Google Tasks와 연동되어 모바일과 웹 어디서나 일관된 상태를 유지합니다.',
+    title: 'ToDo 목록',
+    desc: 'ToDo를 목록별로 나누고 상태, 태그, 체크리스트로 관리합니다.',
   },
   {
     icon: Command,
@@ -55,8 +55,8 @@ const features = [
 const steps = [
   {
     n: '01',
-    title: 'Google 로그인',
-    desc: '캘린더와 Tasks 권한이 함께 연결됩니다.',
+    title: '로그인',
+    desc: '아이디와 비밀번호로 계정을 만들고 로그인합니다.',
   },
   {
     n: '02',
@@ -65,8 +65,8 @@ const steps = [
   },
   {
     n: '03',
-    title: 'Google에 자동 반영',
-    desc: '결과가 캘린더와 Tasks에 즉시 동기화됩니다.',
+    title: '바로 반영',
+    desc: '결과가 캘린더와 ToDo 화면에 바로 반영됩니다.',
   },
 ];
 
@@ -136,14 +136,14 @@ export default function LandingPage() {
               한 곳에서 정리하세요.
             </h1>
             <p className="mt-6 max-w-md text-base text-muted-foreground sm:text-lg">
-              Google 캘린더와 Tasks를 그대로 쓰면서, 채팅 한 줄로 일정과 ToDo를 추가하고 노트까지 함께 관리합니다.
+              채팅 한 줄로 일정과 ToDo를 추가하고 노트까지 함께 관리합니다.
             </p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Link
                 href="/login"
                 className={cn(buttonVariants({ size: 'lg' }), 'gap-2 px-5')}
               >
-                Google로 시작하기
+                시작하기
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <a
@@ -154,7 +154,7 @@ export default function LandingPage() {
               </a>
             </div>
             <p className="mt-5 text-xs text-muted-foreground">
-              Google 계정 · 캘린더 · Tasks 권한이 필요합니다.
+              데모 계정: demo / demo1234
             </p>
           </div>
 
@@ -344,7 +344,7 @@ export default function LandingPage() {
               href="/login"
               className={cn(buttonVariants({ size: 'lg' }), 'gap-2 px-5')}
             >
-              Google로 시작하기
+              시작하기
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>

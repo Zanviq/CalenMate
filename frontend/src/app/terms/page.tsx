@@ -6,7 +6,7 @@ export const metadata = {
   description: 'CalenMate 서비스 이용에 관한 약관입니다.',
 };
 
-const LAST_UPDATED = '2026년 5월 3일';
+const LAST_UPDATED = '2026년 9월 24일';
 const CONTACT_EMAIL = 'zanviq.dev@gmail.com';
 
 export default function TermsPage() {
@@ -39,7 +39,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold tracking-tight">1. 서비스 개요</h2>
             <p className="mt-3 text-muted-foreground">
-              CalenMate(이하 &ldquo;서비스&rdquo;)는 Google 캘린더 및 Google Tasks와 연동되는
+              CalenMate(이하 &ldquo;서비스&rdquo;)는 자체 호스팅 방식으로 실행되는
               일정·할 일 관리 웹 애플리케이션이며, 인공지능 모델을 활용한 일정 관리 보조 기능을
               제공합니다. 본 약관은 서비스 이용에 관한 사용자와 운영자 간의 권리·의무를
               규정합니다.
@@ -61,12 +61,12 @@ export default function TermsPage() {
             <h2 className="text-xl font-semibold tracking-tight">3. 계정 및 인증</h2>
             <ul className="mt-3 list-disc space-y-2 pl-5 text-muted-foreground">
               <li>
-                서비스는 Google OAuth를 통해서만 인증을 제공합니다. 사용자는 Google 계정의 보안을
-                스스로 책임집니다.
+                서비스는 아이디와 비밀번호로 인증을 제공합니다. 사용자는 자신의 비밀번호를 안전하게
+                관리할 책임이 있습니다.
               </li>
               <li>
-                서비스는 캘린더·Tasks 권한을 요청합니다. 사용자는 언제든지 권한을 철회할 수
-                있으며, 철회 시 일부 또는 전체 기능이 동작하지 않을 수 있습니다.
+                AI 기능을 사용하려면 운영자가 Gemini API 키를 설정해야 하며, 설정되지 않은 경우 AI
+                기능이 동작하지 않을 수 있습니다.
               </li>
               <li>타인의 계정으로 서비스를 이용하거나 인증 정보를 위·변조하는 행위는 금지됩니다.</li>
             </ul>
@@ -87,7 +87,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold tracking-tight">5. AI 기능에 관한 고지</h2>
             <p className="mt-3 text-muted-foreground">
-              서비스의 AI 채팅 기능은 Google Gemini 모델을 사용하며, 모델의 응답은 정확성을
+              서비스의 AI 채팅 기능은 Gemini 모델을 사용하며, 모델의 응답은 정확성을
               보장하지 않습니다. 사용자는 AI가 제안한 일정 변경, 할 일 생성·수정·삭제 등을 실행하기
               전에 직접 검토할 책임이 있으며, 운영자는 AI 응답에 따라 발생한 결과(일정 누락,
               잘못된 일정 추가 등)에 대해 책임지지 않습니다.
@@ -111,11 +111,11 @@ export default function TermsPage() {
                 지속적 가용성을 보장하지 않습니다.
               </li>
               <li>
-                Google API 또는 Gemini API의 정책 변경, 장애, 한도 초과 등으로 인한 서비스 중단에
+                Gemini API의 정책 변경, 장애, 한도 초과 등으로 인한 서비스 중단에
                 대해 운영자는 책임지지 않습니다.
               </li>
               <li>
-                사용자의 캘린더·Tasks 데이터 손실, 잘못된 동기화로 인한 손해에 대해 운영자는 직접적
+                사용자의 일정·할 일 데이터 손실로 인한 손해에 대해 운영자는 직접적
                 또는 간접적 책임을 부담하지 않으며, 사용자는 중요한 데이터를 별도로 백업할 책임이
                 있습니다.
               </li>

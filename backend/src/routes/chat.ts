@@ -1,22 +1,30 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
+import { and, asc, count, desc, eq, gte, lt, or, type SQL } from 'drizzle-orm';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
-import { supabaseAdmin } from '../services/supabase';
+import { db } from '../db';
+import { chatMessages, reminders, userInstructions } from '../db/schema';
 import { parseUserMessage } from '../services/gemini';
-import { getCalendarClient } from '../services/google-calendar';
-import { isInvalidGrantError, handleInvalidGrant } from '../services/google-auth';
-import { invalidateSummaryCache } from './summary';
 import {
-  getTasksClient,
-  createGoogleTask,
-  updateGoogleTask,
-  deleteGoogleTask,
-  getTask as getGoogleTask,
-} from '../services/google-tasks';
-import { AIAction } from '../types';
-import type { calendar_v3, tasks_v1 } from 'googleapis';
+  listEvents,
+  getEvent,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  type EventResource,
+} from '../services/events';
+import {
+  createReminder,
+  updateReminder,
+  setReminderStatus,
+  deleteReminder,
+  linkReminderEvent,
+} from '../services/reminders';
+import { isUuid } from '../services/events';
+import { invalidateSummaryCache } from './summary';
+import { AIAction, ChecklistItem } from '../types';
 
 const router = Router();
 
@@ -41,208 +49,82 @@ function colorNameToId(color: string): string | undefined {
   return COLOR_NAME_TO_ID[color.toLowerCase()] || undefined;
 }
 
-// Accept optional pre-fetched clients to avoid re-creating per action
-async function executeAction(
-  action: AIAction,
-  userId: string,
-  calendarClient?: calendar_v3.Calendar,
-  tasksClient?: tasks_v1.Tasks,
-) {
-  // Helper to get calendar — reuses passed client or fetches once
-  const getCalendar = async () => {
-    if (calendarClient) return calendarClient;
-    const { calendar } = await getCalendarClient(userId);
-    return calendar;
-  };
-
-  const getTasksApi = async () => {
-    if (tasksClient) return tasksClient;
-    return getTasksClient(userId);
-  };
-
+async function executeAction(action: AIAction, userId: string) {
   switch (action.type) {
     case 'create_event': {
       const { title, date, start_time, end_time, description, color, reminder_minutes } = action.data as Record<string, string>;
-      const calendar = await getCalendar();
       const colorId = color ? colorNameToId(color) : colorNameToId('peacock');
-      const result = await calendar.events.insert({
-        calendarId: 'primary',
-        requestBody: {
-          summary: title,
-          description,
-          start: {
-            dateTime: `${date}T${start_time}:00`,
-            timeZone: 'Asia/Seoul',
-          },
-          end: {
-            dateTime: `${date}T${end_time}:00`,
-            timeZone: 'Asia/Seoul',
-          },
-          ...(colorId && { colorId }),
-          ...(reminder_minutes && {
-            reminders: {
-              useDefault: false,
-              overrides: [{ method: 'popup', minutes: Number(reminder_minutes) }],
-            },
-          }),
-        },
+      const result = await createEvent(userId, {
+        title,
+        description,
+        start: `${date}T${start_time}:00`,
+        end: `${date}T${end_time}:00`,
+        color: colorId,
+        reminderMinutes: reminder_minutes ? Number(reminder_minutes) : null,
       });
-      return { type: 'event_created', data: result.data };
+      return { type: 'event_created', data: result };
     }
 
     case 'update_event': {
       const { id, title, date, start_time, end_time, description, color, reminder_minutes } = action.data as Record<string, string>;
-      const calendar = await getCalendar();
       const colorId = color ? colorNameToId(color) : undefined;
-      const result = await calendar.events.patch({
-        calendarId: 'primary',
-        eventId: id,
-        requestBody: {
-          ...(title && { summary: title }),
-          ...(description !== undefined && { description }),
-          ...(date && start_time && {
-            start: { dateTime: `${date}T${start_time}:00`, timeZone: 'Asia/Seoul' },
-          }),
-          ...(date && end_time && {
-            end: { dateTime: `${date}T${end_time}:00`, timeZone: 'Asia/Seoul' },
-          }),
-          ...(colorId && { colorId }),
-          ...(reminder_minutes && {
-            reminders: {
-              useDefault: false,
-              overrides: [{ method: 'popup', minutes: Number(reminder_minutes) }],
-            },
-          }),
-        },
+      const result = await updateEvent(userId, id, {
+        ...(title && { title }),
+        ...(description !== undefined && { description }),
+        ...(date && start_time && { start: `${date}T${start_time}:00` }),
+        ...(date && end_time && { end: `${date}T${end_time}:00` }),
+        ...(colorId && { color: colorId }),
+        ...(reminder_minutes && { reminderMinutes: Number(reminder_minutes) }),
       });
-      return { type: 'event_updated', data: result.data };
+      return { type: 'event_updated', data: result };
     }
 
     case 'delete_event': {
       const { id } = action.data as Record<string, string>;
-      const calendar = await getCalendar();
       // Fetch event details before deleting so we can show what was deleted
-      let eventData: Record<string, unknown> = { id };
-      try {
-        const existing = await calendar.events.get({ calendarId: 'primary', eventId: id });
-        eventData = { ...existing.data, _deleted: true };
-      } catch { /* proceed with delete even if fetch fails */ }
-      await calendar.events.delete({ calendarId: 'primary', eventId: id });
-      return { type: 'event_deleted', data: eventData };
+      const existing = await getEvent(userId, id);
+      const deleted = await deleteEvent(userId, id);
+      if (!deleted) throw new Error('일정을 찾을 수 없습니다.');
+      return { type: 'event_deleted', data: { ...(existing ?? { id }), _deleted: true } };
     }
 
     case 'create_reminder': {
       const { title, priority, due_date, notify, list_id, tags, checklist } = action.data as Record<string, unknown>;
-      const listId = (list_id as string) || '@default';
-
-      // Create in Google Tasks
-      const googleTask = await createGoogleTask(userId, listId, {
+      const reminder = await createReminder(userId, {
         title: title as string,
-        due: due_date as string | undefined,
+        priority: (priority as 'low' | 'medium' | 'high') || 'medium',
+        due_date: due_date as string | undefined,
+        notify: (notify as boolean) || false,
+        list_id: list_id as string | undefined,
+        tags: Array.isArray(tags) ? (tags as string[]) : [],
+        checklist: Array.isArray(checklist) ? (checklist as ChecklistItem[]) : [],
       });
-
-      // Store metadata in Supabase
-      const { data: reminder, error } = await supabaseAdmin
-        .from('reminders')
-        .insert({
-          user_id: userId,
-          title,
-          priority: priority || 'medium',
-          due_date: due_date || null,
-          notify: notify || false,
-          is_completed: false,
-          tags: Array.isArray(tags) ? tags : [],
-          checklist: Array.isArray(checklist) ? checklist : [],
-          google_task_id: googleTask.id,
-          google_list_id: listId,
-        })
-        .select()
-        .single();
-      if (error) throw error;
       return { type: 'reminder_created', data: reminder };
     }
 
     case 'update_reminder': {
       const { id, title, description, due_date, priority, notify, checklist, tags } = action.data as Record<string, unknown>;
-
-      // Fetch existing for google_task_id
-      const { data: existing } = await supabaseAdmin
-        .from('reminders')
-        .select('google_task_id, google_list_id')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
-
-      // Update Google Tasks
-      if (existing?.google_task_id && existing?.google_list_id) {
-        const googleUpdates: Record<string, unknown> = {};
-        if (title !== undefined) googleUpdates.title = title;
-        if (description !== undefined) googleUpdates.notes = description;
-        if (due_date !== undefined) googleUpdates.due = due_date;
-        if (Object.keys(googleUpdates).length > 0) {
-          await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, googleUpdates as Record<string, string>);
-        }
-      }
-
-      const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() };
-      if (title !== undefined) updateFields.title = title;
-      if (description !== undefined) updateFields.description = description;
-      if (due_date !== undefined) updateFields.due_date = due_date;
-      if (priority !== undefined) updateFields.priority = priority;
-      if (notify !== undefined) updateFields.notify = notify;
-      if (checklist !== undefined) updateFields.checklist = checklist;
-      if (tags !== undefined && Array.isArray(tags)) updateFields.tags = tags;
-
-      const { data: reminder, error } = await supabaseAdmin
-        .from('reminders')
-        .update(updateFields)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-      if (error) throw error;
+      const reminder = await updateReminder(userId, id as string, {
+        ...(title !== undefined && { title: title as string }),
+        ...(description !== undefined && { description: description as string | null }),
+        ...(due_date !== undefined && { due_date: due_date as string | null }),
+        ...(priority !== undefined && { priority: priority as 'low' | 'medium' | 'high' }),
+        ...(notify !== undefined && { notify: notify as boolean }),
+        ...(checklist !== undefined && { checklist: checklist as ChecklistItem[] }),
+        ...(tags !== undefined && Array.isArray(tags) && { tags: tags as string[] }),
+      });
+      if (!reminder) throw new Error('Reminder not found');
       return { type: 'reminder_updated', data: reminder };
     }
 
     case 'set_reminder_status': {
       const { id, status } = action.data as Record<string, unknown>;
-      const newStatus = status as 'not_started' | 'in_progress' | 'completed';
-      const isCompleted = newStatus === 'completed';
-
-      const { data: existing } = await supabaseAdmin
-        .from('reminders')
-        .select('google_task_id, google_list_id, started_at, completed_at')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
-
-      if (existing?.google_task_id && existing?.google_list_id) {
-        await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, {
-          status: isCompleted ? 'completed' : 'needsAction',
-        });
-      }
-
-      const nowIso = new Date().toISOString();
-      const update: Record<string, unknown> = {
-        status: newStatus,
-        is_completed: isCompleted,
-        updated_at: nowIso,
-      };
-      if (newStatus === 'in_progress' && !existing?.started_at) update.started_at = nowIso;
-      if (isCompleted) update.completed_at = existing?.completed_at ?? nowIso;
-      else if (newStatus === 'not_started') {
-        update.completed_at = null;
-        update.started_at = null;
-      }
-
-      const { data: reminder, error } = await supabaseAdmin
-        .from('reminders')
-        .update(update)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-      if (error) throw error;
+      const reminder = await setReminderStatus(
+        userId,
+        id as string,
+        status as 'not_started' | 'in_progress' | 'completed',
+      );
+      if (!reminder) throw new Error('Reminder not found');
       return { type: 'reminder_status_updated', data: reminder };
     }
 
@@ -256,139 +138,94 @@ async function executeAction(
         duration_minutes,
         auto_complete_on_event_end,
       } = action.data as Record<string, unknown>;
-
-      const { data: existing } = await supabaseAdmin
-        .from('reminders')
-        .select('id, title, description')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
-      if (!existing) throw new Error('Reminder not found');
-
-      let linkedEventId = event_id as string | undefined;
-
-      if (!linkedEventId) {
-        if (!date || !start_time) throw new Error('event_id 또는 date+start_time이 필요합니다');
-        let resolvedEnd = end_time as string | undefined;
-        if (!resolvedEnd) {
-          const minutes = (duration_minutes as number) ?? 60;
-          const [h, m] = (start_time as string).split(':').map(Number);
-          const startMin = h * 60 + m;
-          const endMin = Math.min(startMin + minutes, 24 * 60 - 1);
-          const eh = Math.floor(endMin / 60);
-          const em = endMin % 60;
-          resolvedEnd = `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
-        }
-        const calendar = await getCalendar();
-        const created = await calendar.events.insert({
-          calendarId: 'primary',
-          requestBody: {
-            summary: existing.title,
-            description: existing.description ?? undefined,
-            start: { dateTime: `${date}T${start_time}:00`, timeZone: 'Asia/Seoul' },
-            end: { dateTime: `${date}T${resolvedEnd}:00`, timeZone: 'Asia/Seoul' },
-          },
-        });
-        linkedEventId = created.data.id ?? undefined;
-      }
-
-      if (!linkedEventId) throw new Error('Failed to obtain event id');
-
-      const { data: reminder, error } = await supabaseAdmin
-        .from('reminders')
-        .update({
-          linked_event_id: linkedEventId,
-          auto_complete_on_event_end: (auto_complete_on_event_end as boolean) ?? true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-      if (error) throw error;
+      const reminder = await linkReminderEvent(userId, id as string, {
+        event_id: event_id as string | undefined,
+        date: date as string | undefined,
+        start_time: start_time as string | undefined,
+        end_time: end_time as string | undefined,
+        duration_minutes: duration_minutes as number | undefined,
+        auto_complete_on_event_end: auto_complete_on_event_end as boolean | undefined,
+      });
       return { type: 'reminder_linked', data: reminder };
     }
 
     case 'delete_reminder': {
       const { id } = action.data as Record<string, string>;
-      // Fetch reminder details before deleting
-      let reminderData: Record<string, unknown> = { id };
-      const { data: existing } = await supabaseAdmin
-        .from('reminders')
-        .select('*')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
-      if (existing) {
-        reminderData = { ...existing, _deleted: true };
-        // Delete from Google Tasks
-        if (existing.google_task_id && existing.google_list_id) {
-          try {
-            await deleteGoogleTask(userId, existing.google_list_id, existing.google_task_id);
-          } catch { /* may already be deleted */ }
-        }
-      }
-      await supabaseAdmin
-        .from('reminders')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', userId);
-      return { type: 'reminder_deleted', data: reminderData };
+      // Return the deleted row so the UI can show what was removed
+      const deleted = await deleteReminder(userId, id);
+      return { type: 'reminder_deleted', data: deleted ? { ...deleted, _deleted: true } : { id } };
     }
 
     case 'complete_reminder': {
       const { id } = action.data as Record<string, string>;
-
-      // Fetch existing for google_task_id
-      const { data: existing } = await supabaseAdmin
-        .from('reminders')
-        .select('google_task_id, google_list_id')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .single();
-
-      // Update Google Tasks status
-      if (existing?.google_task_id && existing?.google_list_id) {
-        await updateGoogleTask(userId, existing.google_list_id, existing.google_task_id, {
-          status: 'completed',
-        });
-      }
-
-      const { data: reminder, error } = await supabaseAdmin
-        .from('reminders')
-        .update({ is_completed: true, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-      if (error) throw error;
+      const reminder = await setReminderStatus(userId, id, 'completed');
+      if (!reminder) throw new Error('Reminder not found');
       return { type: 'reminder_completed', data: reminder };
     }
 
     case 'save_instruction': {
       const { content } = action.data as Record<string, string>;
-      const { data: instruction, error } = await supabaseAdmin
-        .from('user_instructions')
-        .insert({ user_id: userId, content })
-        .select()
-        .single();
-      if (error) throw error;
+      const [instruction] = await db
+        .insert(userInstructions)
+        .values({ user_id: userId, content })
+        .returning();
       return { type: 'instruction_saved', data: instruction };
     }
 
     case 'delete_instruction': {
       const { id } = action.data as Record<string, string>;
-      await supabaseAdmin
-        .from('user_instructions')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', userId);
+      if (isUuid(id)) {
+        await db
+          .delete(userInstructions)
+          .where(and(eq(userInstructions.id, id), eq(userInstructions.user_id, userId)));
+      }
       return { type: 'instruction_deleted', data: { id } };
     }
 
     default:
       return { type: 'unknown', data: null };
   }
+}
+
+// Compact event shape for the AI prompt.
+function toPromptEvent(item: EventResource) {
+  return {
+    id: item.id,
+    title: item.summary || '(제목 없음)',
+    date: item.start.dateTime?.slice(0, 10) || item.start.date || '',
+    start_time: item.start.dateTime?.slice(11, 16) || '',
+    end_time: item.end.dateTime?.slice(11, 16) || '',
+    allDay: !item.start.dateTime,
+    colorId: item.colorId || '',
+    description: item.description || '',
+  };
+}
+
+// Insert the user message + assistant reply as a pair (explicit timestamps
+// keep the ordering stable on reload) and return the saved assistant row.
+async function saveExchange(
+  userId: string,
+  context: 'home' | 'calendar' | 'reminder',
+  userMessage: string,
+  assistantContent: string,
+  assistantMetadata: Record<string, unknown>,
+) {
+  const now = new Date();
+  const saved = await db
+    .insert(chatMessages)
+    .values([
+      { user_id: userId, role: 'user', content: userMessage, context, metadata: {}, created_at: now },
+      {
+        user_id: userId,
+        role: 'assistant',
+        content: assistantContent,
+        context,
+        metadata: assistantMetadata,
+        created_at: new Date(now.getTime() + 1000),
+      },
+    ])
+    .returning();
+  return saved.find((m) => m.role === 'assistant');
 }
 
 const chatMessageSchema = z.object({
@@ -404,55 +241,49 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
   try {
     const { content, message, context = 'home' } = req.body;
     const userMessage = content || message;
+    const userId = req.userId!;
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekLater = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
     // Fetch all context data in parallel for maximum speed
-    const [chatHistoryResult, instructionsResult, calendarResult, remindersResult] =
+    const [chatHistoryRows, userInstructionRows, calendarResult, reminderRows] =
       await Promise.all([
         // 1. Chat history — fetch globally (no context filter) so the AI has
         //    cross-tab memory. The UI continues to filter by context via GET /history.
         //    Tiebreaker by role for stable ordering on equal timestamps.
-        supabaseAdmin
-          .from('chat_messages')
-          .select('role, content, context')
-          .eq('user_id', req.userId)
-          .order('created_at', { ascending: false })
-          .order('role', { ascending: true })
-          .limit(40),
+        db
+          .select({ role: chatMessages.role, content: chatMessages.content, context: chatMessages.context })
+          .from(chatMessages)
+          .where(eq(chatMessages.user_id, userId))
+          .orderBy(desc(chatMessages.created_at), asc(chatMessages.role))
+          .limit(40)
+          .catch((err) => {
+            console.error('Chat history fetch error:', err);
+            return [];
+          }),
 
         // 2. User instructions
-        supabaseAdmin
-          .from('user_instructions')
-          .select('id, content')
-          .eq('user_id', req.userId)
-          .order('created_at', { ascending: true }),
+        db
+          .select({ id: userInstructions.id, content: userInstructions.content })
+          .from(userInstructions)
+          .where(eq(userInstructions.user_id, userId))
+          .orderBy(asc(userInstructions.created_at))
+          .catch((err) => {
+            console.error('Instructions fetch error:', err);
+            return [];
+          }),
 
-        // 3. Calendar events (with error handling)
-        (async (): Promise<{ events: calendar_v3.Schema$Event[]; error: string | null; isAuthError?: boolean }> => {
+        // 3. Calendar events for today ~ +7 days
+        (async (): Promise<{ events: EventResource[]; error: string | null }> => {
           try {
-            const { calendar } = await getCalendarClient(req.userId!);
-            const now = new Date();
-            const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            const weekLater = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
-            const eventsResponse = await calendar.events.list({
-              calendarId: 'primary',
-              timeMin: startOfToday.toISOString(),
-              timeMax: weekLater.toISOString(),
-              singleEvents: true,
-              orderBy: 'startTime',
-              maxResults: 50,
-            });
-            return { events: eventsResponse.data.items || [], error: null };
+            const events = await listEvents(userId, { timeMin: startOfToday, timeMax: weekLater, limit: 50 });
+            return { events, error: null };
           } catch (err) {
-            if (isInvalidGrantError(err)) {
-              const msg = await handleInvalidGrant(req.userId!);
-              return { events: [], error: msg, isAuthError: true };
-            }
-            // Don't leak raw provider error strings (e.g. raw "invalid_grant" tokens) to the AI/user
             console.error('Calendar fetch error in chat context:', err);
-            return {
-              events: [],
-              error: 'Google Calendar 연결 실패',
-            };
+            return { events: [], error: '캘린더 조회 실패' };
           }
         })(),
 
@@ -460,76 +291,37 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         //    (last 14 days) so the AI can answer "어제 완료한 일?" or reference
         //    just-completed items conversationally. Order by recency; cap to keep
         //    the prompt within sensible token budget.
-        supabaseAdmin
-          .from('reminders')
-          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, auto_complete_on_event_end, tags, checklist, notify, notify_at, color, google_task_id, google_list_id, updated_at')
-          .eq('user_id', req.userId)
-          .or(`is_completed.eq.false,completed_at.gte.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
-          .order('updated_at', { ascending: false })
-          .limit(150),
+        db
+          .select()
+          .from(reminders)
+          .where(and(
+            eq(reminders.user_id, userId),
+            or(eq(reminders.is_completed, false), gte(reminders.completed_at, twoWeeksAgo)),
+          ))
+          .orderBy(desc(reminders.updated_at))
+          .limit(150)
+          .catch((err) => {
+            console.error('Reminders fetch error:', err);
+            return [];
+          }),
       ]);
-
-    // Log any Supabase query errors (gracefully degrade with empty data)
-    if (chatHistoryResult.error) console.error('Chat history fetch error:', chatHistoryResult.error);
-    if (instructionsResult.error) console.error('Instructions fetch error:', instructionsResult.error);
-    if (remindersResult.error) console.error('Reminders fetch error:', remindersResult.error);
 
     // Tag cross-context messages so the AI knows which tab a memory came from.
     // Current-context messages stay untagged for cleanliness.
-    const chatHistory = (chatHistoryResult.data || [])
+    const chatHistory = [...chatHistoryRows]
       .reverse()
-      .map((m: { role: string; content: string; context?: string }) => ({
+      .map((m) => ({
         role: m.role,
         content: m.context && m.context !== context ? `[${m.context}] ${m.content}` : m.content,
       }));
 
-    const userInstructions = (instructionsResult.data || []) as { id: string; content: string }[];
-
     const calendarError = calendarResult.error;
-    const isAuthError = !!(calendarResult as { isAuthError?: boolean }).isAuthError;
-
-    // If Google auth is invalid, skip AI processing and return auth error directly
-    if (isAuthError && calendarError) {
-      const authErrorResponse = calendarError;
-      const now = new Date();
-      const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
-        { user_id: req.userId, role: 'user', content: userMessage, context, metadata: {}, created_at: now.toISOString() },
-        { user_id: req.userId, role: 'assistant', content: authErrorResponse, context, metadata: {}, created_at: new Date(now.getTime() + 1000).toISOString() },
-      ]).select();
-
-      const assistantMessage = savedMessages?.[1] ?? {
-        id: crypto.randomUUID(),
-        user_id: req.userId,
-        role: 'assistant',
-        content: authErrorResponse,
-        context,
-        metadata: {},
-        created_at: new Date().toISOString(),
-      };
-
-      res.json({ response: authErrorResponse, actions: [], results: [], message: assistantMessage });
-      return;
-    }
-
-    const existingEvents = calendarResult.events.map((item) => {
-      const start = item.start as { dateTime?: string; date?: string } | undefined;
-      const end = item.end as { dateTime?: string; date?: string } | undefined;
-      return {
-        id: item.id,
-        title: item.summary || '(제목 없음)',
-        date: start?.dateTime?.slice(0, 10) || start?.date || '',
-        start_time: start?.dateTime?.slice(11, 16) || '',
-        end_time: end?.dateTime?.slice(11, 16) || '',
-        allDay: !start?.dateTime,
-        colorId: item.colorId || '',
-        description: item.description || '',
-      };
-    });
+    const existingEvents = calendarResult.events.map(toPromptEvent);
 
     // Map reminders into a compact AI-readable shape. Includes status/tags/checklist
     // progress/linked_event so the AI can reason about state without per-question lookups.
-    const existingReminders = (remindersResult.data || []).map((r: Record<string, unknown>) => {
-      const checklist = Array.isArray(r.checklist) ? r.checklist as Array<{ done: boolean }> : [];
+    const existingReminders = reminderRows.map((r) => {
+      const checklist = Array.isArray(r.checklist) ? r.checklist : [];
       const checklistDone = checklist.filter((c) => c.done).length;
       return {
         id: r.id,
@@ -548,8 +340,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         notify: r.notify ?? false,
         notify_at: r.notify_at ?? null,
         color: r.color ?? null,
-        google_task_id: r.google_task_id ?? null,
-        google_list_id: r.google_list_id || '@default',
+        list_id: r.list_id,
       };
     });
 
@@ -560,7 +351,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       existingEvents,
       existingReminders,
       chatHistory,
-      userInstructions,
+      userInstructions: userInstructionRows,
       calendarError,
     });
 
@@ -569,27 +360,15 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     if (queryAction) {
       try {
         const { timeMin, timeMax } = queryAction.data as { timeMin: string; timeMax: string };
-        const { calendar } = await getCalendarClient(req.userId!);
-        const eventsResponse = await calendar.events.list({
-          calendarId: 'primary',
-          timeMin: new Date(timeMin).toISOString(),
-          timeMax: new Date(timeMax + 'T23:59:59').toISOString(),
-          singleEvents: true,
-          orderBy: 'startTime',
-          maxResults: 100,
+        const queried = await listEvents(userId, {
+          timeMin: new Date(timeMin),
+          timeMax: new Date(timeMax + 'T23:59:59'),
+          limit: 100,
         });
-        const queriedEvents = (eventsResponse.data.items || []).map((item) => {
-          const start = item.start as { dateTime?: string; date?: string } | undefined;
-          const end = item.end as { dateTime?: string; date?: string } | undefined;
-          return {
-            id: item.id,
-            title: item.summary || '(제목 없음)',
-            date: start?.dateTime?.slice(0, 10) || start?.date || '',
-            start_time: start?.dateTime?.slice(11, 16) || '',
-            end_time: end?.dateTime?.slice(11, 16) || '',
-            allDay: !start?.dateTime,
-            description: item.description || '',
-          };
+        const queriedEvents = queried.map((item) => {
+          const { colorId: _colorId, ...rest } = toPromptEvent(item);
+          void _colorId;
+          return rest;
         });
         // Re-call with queried events so AI can generate actions (delete, update, etc.)
         aiResponse = await parseUserMessage({
@@ -598,7 +377,7 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
           existingEvents: queriedEvents,
           existingReminders,
           chatHistory,
-          userInstructions,
+          userInstructions: userInstructionRows,
           calendarError: null,
           eventsLabel: `${timeMin} ~ ${timeMax}`,
         });
@@ -614,35 +393,8 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
 
     // If confirmation required, save actions as pending and return without executing
     if (aiResponse.requiresConfirmation && aiResponse.actions.length > 0) {
-      const now = new Date();
-      const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
-        {
-          user_id: req.userId,
-          role: 'user',
-          content: userMessage,
-          context,
-          metadata: {},
-          created_at: now.toISOString(),
-        },
-        {
-          user_id: req.userId,
-          role: 'assistant',
-          content: aiResponse.response,
-          context,
-          metadata: { pendingActions: aiResponse.actions, confirmationStatus: 'pending' },
-          created_at: new Date(now.getTime() + 1000).toISOString(),
-        },
-      ]).select();
-
-      const assistantMessage = savedMessages?.[1] ?? {
-        id: crypto.randomUUID(),
-        user_id: req.userId,
-        role: 'assistant',
-        content: aiResponse.response,
-        context,
-        metadata: { pendingActions: aiResponse.actions, confirmationStatus: 'pending' },
-        created_at: new Date().toISOString(),
-      };
+      const metadata = { pendingActions: aiResponse.actions, confirmationStatus: 'pending' };
+      const assistantMessage = await saveExchange(userId, context, userMessage, aiResponse.response, metadata);
 
       res.json({
         response: aiResponse.response,
@@ -654,48 +406,13 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
       return;
     }
 
-    // Pre-fetch calendar client once for all action executions
-    let calendarClient: calendar_v3.Calendar | undefined;
-    let tasksApiClient: tasks_v1.Tasks | undefined;
-    const hasCalendarActions = aiResponse.actions.some(
-      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event' || a.type === 'link_reminder_event'
-    );
-    const hasTaskActions = aiResponse.actions.some(
-      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder', 'set_reminder_status', 'link_reminder_event'].includes(a.type)
-    );
-    if (hasCalendarActions) {
-      try {
-        const { calendar } = await getCalendarClient(req.userId!);
-        calendarClient = calendar;
-      } catch (err) {
-        // Falls back to per-action fetching; log so deterministic failures
-        // (invalid_grant, quota) don't disappear silently.
-        console.warn('[chat] Calendar pre-fetch failed, falling back per-action:', err);
-      }
-    }
-    if (hasTaskActions) {
-      try {
-        tasksApiClient = await getTasksClient(req.userId!);
-      } catch (err) {
-        console.warn('[chat] Tasks pre-fetch failed, falling back per-action:', err);
-      }
-    }
-
     // Execute actions in parallel.
     // Distinct event/reminder IDs are independent; concurrent execution is safe.
-    // invalid_grant is handled once after all results settle (same token error would repeat anyway).
-    const INVALID_GRANT_MARKER = '__CALENMATE_INVALID_GRANT__';
     const actionResults = await Promise.all(
       aiResponse.actions.map(async (action) => {
         try {
-          return await executeAction(action, req.userId!, calendarClient, tasksApiClient);
+          return await executeAction(action, userId);
         } catch (err) {
-          if (isInvalidGrantError(err)) {
-            return {
-              type: `${action.type}_error`,
-              data: { error: INVALID_GRANT_MARKER },
-            };
-          }
           return {
             type: `${action.type}_error`,
             data: { error: err instanceof Error ? err.message : 'Action failed' },
@@ -703,17 +420,6 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
         }
       })
     );
-
-    // Resolve invalid_grant once (token is shared across all actions)
-    if (actionResults.some((r) => (r.data as Record<string, unknown>)?.error === INVALID_GRANT_MARKER)) {
-      const msg = await handleInvalidGrant(req.userId!);
-      for (const r of actionResults) {
-        const data = r.data as Record<string, unknown> | null;
-        if (data && data.error === INVALID_GRANT_MARKER) {
-          data.error = msg;
-        }
-      }
-    }
 
     // Invalidate summary cache only when at least one schedule-changing action actually succeeded.
     // This avoids paying for re-summarization (Gemini call) when all actions failed.
@@ -724,39 +430,13 @@ router.post('/', validateBody(chatMessageSchema), async (req: AuthRequest, res: 
     ]);
     const hasSuccessfulScheduleAction = actionResults.some((r) => SUCCESS_TYPES.has(r.type));
     if (hasSuccessfulScheduleAction) {
-      invalidateSummaryCache(req.userId!);
+      invalidateSummaryCache(userId);
     }
 
-    // Save chat messages (explicit timestamps to guarantee ordering on reload)
-    const now = new Date();
-    const { data: savedMessages } = await supabaseAdmin.from('chat_messages').insert([
-      {
-        user_id: req.userId,
-        role: 'user',
-        content: userMessage,
-        context,
-        metadata: {},
-        created_at: now.toISOString(),
-      },
-      {
-        user_id: req.userId,
-        role: 'assistant',
-        content: aiResponse.response,
-        context,
-        metadata: { actions: aiResponse.actions, results: actionResults },
-        created_at: new Date(now.getTime() + 1000).toISOString(),
-      },
-    ]).select();
-
-    const assistantMessage = savedMessages?.[1] ?? {
-      id: crypto.randomUUID(),
-      user_id: req.userId,
-      role: 'assistant',
-      content: aiResponse.response,
-      context,
-      metadata: { actions: aiResponse.actions, results: actionResults },
-      created_at: new Date().toISOString(),
-    };
+    const assistantMessage = await saveExchange(userId, context, userMessage, aiResponse.response, {
+      actions: aiResponse.actions,
+      results: actionResults,
+    });
 
     res.json({
       response: aiResponse.response,
@@ -783,36 +463,11 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
   try {
     const { actions, messageId } = req.body as { actions: AIAction[]; messageId: string };
 
-    // Pre-fetch clients
-    let calendarClient: calendar_v3.Calendar | undefined;
-    let tasksApiClient: tasks_v1.Tasks | undefined;
-    const hasCalendarActions = actions.some(
-      (a) => a.type === 'create_event' || a.type === 'update_event' || a.type === 'delete_event' || a.type === 'link_reminder_event'
-    );
-    const hasTaskActions = actions.some(
-      (a) => ['create_reminder', 'update_reminder', 'delete_reminder', 'complete_reminder', 'set_reminder_status', 'link_reminder_event'].includes(a.type)
-    );
-    if (hasCalendarActions) {
-      try {
-        const { calendar } = await getCalendarClient(req.userId!);
-        calendarClient = calendar;
-      } catch (err) {
-        console.warn('[chat/execute] Calendar pre-fetch failed, falling back per-action:', err);
-      }
-    }
-    if (hasTaskActions) {
-      try {
-        tasksApiClient = await getTasksClient(req.userId!);
-      } catch (err) {
-        console.warn('[chat/execute] Tasks pre-fetch failed, falling back per-action:', err);
-      }
-    }
-
     // Execute all actions
     const actionResults = [];
     for (const action of actions) {
       try {
-        const result = await executeAction(action as AIAction, req.userId!, calendarClient, tasksApiClient);
+        const result = await executeAction(action as AIAction, req.userId!);
         actionResults.push(result);
       } catch (err) {
         actionResults.push({
@@ -826,19 +481,18 @@ router.post('/execute', validateBody(executeSchema), async (req: AuthRequest, re
     // here so the UI knows the confirmation flow has terminated — leaving them
     // in caused the "buttons reappear on reload" bug because the renderer fell
     // through to the pending-state branch when status detection got out of sync.
-    await supabaseAdmin
-      .from('chat_messages')
-      .update({
+    await db
+      .update(chatMessages)
+      .set({
         metadata: {
           confirmationStatus: 'confirmed',
           results: actionResults,
         },
       })
-      .eq('id', messageId)
-      .eq('user_id', req.userId);
+      .where(and(eq(chatMessages.id, messageId), eq(chatMessages.user_id, req.userId!)));
 
     // Invalidate caches
-    if (hasCalendarActions || hasTaskActions) {
+    if (actions.length > 0) {
       invalidateSummaryCache(req.userId!);
     }
 
@@ -860,13 +514,13 @@ const cancelSchema = z.object({
 router.post('/cancel', validateBody(cancelSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { messageId } = req.body as { messageId: string };
+    const ownMessage = and(eq(chatMessages.id, messageId), eq(chatMessages.user_id, req.userId!));
 
-    const { data: existing } = await supabaseAdmin
-      .from('chat_messages')
-      .select('metadata')
-      .eq('id', messageId)
-      .eq('user_id', req.userId)
-      .single();
+    const [existing] = await db
+      .select({ metadata: chatMessages.metadata })
+      .from(chatMessages)
+      .where(ownMessage)
+      .limit(1);
 
     if (!existing) {
       res.status(404).json({ error: 'Message not found' });
@@ -876,24 +530,14 @@ router.post('/cancel', validateBody(cancelSchema), async (req: AuthRequest, res:
     // Strip pendingActions on cancel for the same reason as /execute — once
     // the user has acted, the UI must not see "pending" pending actions on
     // reload or it'll reflash the confirm buttons.
-    const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const existingMeta = existing.metadata ?? {};
     const { pendingActions: _pendingActions, ...rest } = existingMeta;
     void _pendingActions;
-    const newMetadata = {
-      ...rest,
-      confirmationStatus: 'cancelled',
-    };
 
-    const { error } = await supabaseAdmin
-      .from('chat_messages')
-      .update({ metadata: newMetadata })
-      .eq('id', messageId)
-      .eq('user_id', req.userId);
-
-    if (error) {
-      res.status(500).json({ error: 'Failed to cancel actions' });
-      return;
-    }
+    await db
+      .update(chatMessages)
+      .set({ metadata: { ...rest, confirmationStatus: 'cancelled' } })
+      .where(ownMessage);
 
     res.json({ message: 'Cancelled' });
   } catch {
@@ -907,41 +551,36 @@ router.get('/history', async (req: AuthRequest, res: Response) => {
     const { context, limit: limitStr, before } = req.query;
     const limit = Math.min(Number(limitStr) || 50, 100);
 
-    // Order by created_at DESC, then role ASC as tiebreaker.
-    // Tiebreaker matters because a single chat exchange can have user/assistant rows
-    // with identical created_at if the DB column resolution drops sub-second precision.
-    // 'assistant' < 'user' alphabetically → after JS reverse(), user appears before assistant.
-    let query = supabaseAdmin
-      .from('chat_messages')
-      .select('*', { count: 'exact' })
-      .eq('user_id', req.userId)
-      .order('created_at', { ascending: false })
-      .order('role', { ascending: true })
-      .limit(limit);
-
+    const conditions: SQL[] = [eq(chatMessages.user_id, req.userId!)];
     if (context) {
-      query = query.eq('context', context as string);
+      conditions.push(eq(chatMessages.context, context as 'home' | 'calendar' | 'reminder'));
     }
-
     // Cursor-based pagination: fetch messages before a given timestamp
     if (before) {
-      query = query.lt('created_at', before as string);
+      const beforeDate = new Date(before as string);
+      if (!Number.isNaN(beforeDate.getTime())) conditions.push(lt(chatMessages.created_at, beforeDate));
     }
+    const where = and(...conditions);
 
-    const { data: messages, error, count } = await query;
-
-    if (error) {
-      res.status(500).json({ error: 'Failed to fetch chat history' });
-      return;
-    }
+    // Order by created_at DESC, then role ASC as tiebreaker.
+    // 'assistant' < 'user' alphabetically → after JS reverse(), user appears before assistant.
+    const [messages, [{ total }]] = await Promise.all([
+      db
+        .select()
+        .from(chatMessages)
+        .where(where)
+        .orderBy(desc(chatMessages.created_at), asc(chatMessages.role))
+        .limit(limit),
+      db.select({ total: count() }).from(chatMessages).where(where),
+    ]);
 
     // Reverse to chronological order for the client
-    const sorted = (messages || []).reverse();
+    const sorted = [...messages].reverse();
 
     res.json({
       messages: sorted,
-      hasMore: (messages?.length || 0) === limit,
-      total: count,
+      hasMore: messages.length === limit,
+      total,
     });
   } catch {
     res.status(500).json({ error: 'Failed to fetch chat history' });
@@ -953,21 +592,12 @@ router.delete('/history', async (req: AuthRequest, res: Response) => {
   try {
     const { context } = req.query;
 
-    let query = supabaseAdmin
-      .from('chat_messages')
-      .delete()
-      .eq('user_id', req.userId);
-
+    const conditions: SQL[] = [eq(chatMessages.user_id, req.userId!)];
     if (context) {
-      query = query.eq('context', context as string);
+      conditions.push(eq(chatMessages.context, context as 'home' | 'calendar' | 'reminder'));
     }
 
-    const { error } = await query;
-
-    if (error) {
-      res.status(500).json({ error: 'Failed to clear chat history' });
-      return;
-    }
+    await db.delete(chatMessages).where(and(...conditions));
 
     res.json({ message: 'Chat history cleared' });
   } catch {

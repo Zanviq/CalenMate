@@ -8,7 +8,6 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
 import {
   Select,
   SelectContent,
@@ -18,17 +17,12 @@ import {
 } from '@/components/ui/select';
 import {
   LogOut,
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  RefreshCw,
   Palette,
   Sun,
   Moon,
   Monitor,
   Calendar,
   Flag,
-  ListTodo,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth';
 import api from '@/lib/api';
@@ -38,16 +32,6 @@ interface UserSettings {
   defaultCalendarView: 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
   defaultReminderPriority: 'low' | 'medium' | 'high';
   language: 'ko' | 'en';
-}
-
-type ConnectionState =
-  | { connected: true }
-  | { connected: false; reason: 'not_linked' | 'invalid_grant' | 'forbidden' | 'unknown'; message: string };
-
-interface ConnectionStatus {
-  googleLinked: boolean;
-  calendar: ConnectionState;
-  tasks: ConnectionState;
 }
 
 const themeOptions = [
@@ -80,20 +64,6 @@ export default function SettingsPage() {
       const res = await api.get('/api/settings');
       return res.data;
     },
-  });
-
-  const {
-    data: connection,
-    isFetching: connectionFetching,
-    refetch: refetchConnection,
-  } = useQuery<ConnectionStatus>({
-    queryKey: ['connection-status'],
-    queryFn: async () => {
-      const res = await api.get('/api/auth/connection-status');
-      return res.data;
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
   });
 
   // Sync theme from server settings on load
@@ -141,7 +111,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">프로필</CardTitle>
-          <CardDescription>Google 계정으로 로그인되어 있습니다.</CardDescription>
+          <CardDescription>아이디와 비밀번호로 로그인되어 있습니다.</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-4">
           <Avatar className="h-16 w-16">
@@ -154,59 +124,8 @@ export default function SettingsPage() {
           </Avatar>
           <div className="flex-1">
             <p className="font-medium">{user?.display_name}</p>
-            <p className="text-sm text-zinc-500">{user?.email}</p>
+            <p className="text-sm text-zinc-500">@{user?.username}</p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Google 동기화 */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                Google 동기화
-              </CardTitle>
-              <CardDescription>캘린더와 ToDo(Tasks) 연동 상태입니다.</CardDescription>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => refetchConnection()}
-              disabled={connectionFetching}
-              title="상태 다시 확인"
-            >
-              <RefreshCw className={`h-4 w-4 ${connectionFetching ? 'animate-spin' : ''}`} />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <ConnectionRow
-            icon={<Calendar className="h-4 w-4 text-zinc-500" />}
-            label="Google Calendar"
-            state={connection?.calendar}
-            loading={connectionFetching && !connection}
-          />
-          <Separator />
-          <ConnectionRow
-            icon={<ListTodo className="h-4 w-4 text-zinc-500" />}
-            label="Google Tasks (ToDo)"
-            state={connection?.tasks}
-            loading={connectionFetching && !connection}
-          />
-          {connection &&
-            ((!connection.calendar.connected && connection.calendar.reason !== 'not_linked') ||
-              (!connection.tasks.connected && connection.tasks.reason !== 'not_linked')) && (
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                연결에 문제가 있는 경우 로그아웃 후 다시 로그인하면 권한이 갱신됩니다.
-              </p>
-            )}
-          {connection && !connection.googleLinked && (
-            <p className="text-xs text-zinc-400">
-              Google 계정으로 다시 로그인하면 캘린더/ToDo가 자동으로 연동됩니다.
-            </p>
-          )}
         </CardContent>
       </Card>
 
@@ -319,62 +238,6 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-interface ConnectionRowProps {
-  icon: React.ReactNode;
-  label: string;
-  state: ConnectionState | undefined;
-  loading: boolean;
-}
-
-function ConnectionRow({ icon, label, state, loading }: ConnectionRowProps) {
-  let badge: React.ReactNode;
-  let detail: string | null = null;
-
-  if (loading || !state) {
-    badge = (
-      <Badge variant="secondary" className="bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-        확인 중...
-      </Badge>
-    );
-  } else if (state.connected) {
-    badge = (
-      <Badge variant="secondary" className="gap-1 bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400">
-        <CheckCircle2 className="h-3 w-3" />
-        연동됨
-      </Badge>
-    );
-  } else if (state.reason === 'not_linked') {
-    badge = (
-      <Badge variant="secondary" className="gap-1 bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-        <XCircle className="h-3 w-3" />
-        미연결
-      </Badge>
-    );
-    detail = state.message;
-  } else {
-    badge = (
-      <Badge variant="secondary" className="gap-1 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-        <AlertCircle className="h-3 w-3" />
-        오류
-      </Badge>
-    );
-    detail = state.message;
-  }
-
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="flex items-center gap-2 text-sm">
-          {icon}
-          {label}
-        </span>
-        {badge}
-      </div>
-      {detail && <p className="pl-6 text-xs text-zinc-400">{detail}</p>}
     </div>
   );
 }

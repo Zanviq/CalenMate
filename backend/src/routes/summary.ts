@@ -1,8 +1,10 @@
 import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
-import { supabaseAdmin } from '../services/supabase';
-import { getCalendarClient } from '../services/google-calendar';
+import { and, eq, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { reminders } from '../db/schema';
+import { listEvents } from '../services/events';
 import { summarizeSchedule, GeminiUnavailableError } from '../services/gemini';
 
 const router = Router();
@@ -52,15 +54,8 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
     const [eventsResult, remindersResult] = await Promise.all([
       (async () => {
         try {
-          const { calendar } = await getCalendarClient(req.userId!);
-          const eventsResponse = await calendar.events.list({
-            calendarId: 'primary',
-            timeMin: startOfDay.toISOString(),
-            timeMax: endOfDay.toISOString(),
-            singleEvents: true,
-            orderBy: 'startTime',
-          });
-          return (eventsResponse.data.items || []) as Record<string, unknown>[];
+          const items = await listEvents(req.userId!, { timeMin: startOfDay, timeMax: endOfDay });
+          return items as unknown as Record<string, unknown>[];
         } catch {
           return [];
         }
@@ -69,14 +64,27 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
         // Pull all incomplete reminders (regardless of due_date — including null
         // and future) so the summarizer has the full ToDo backlog. The summarizer
         // is responsible for prioritizing today-relevant items.
-        const { data: reminders } = await supabaseAdmin
-          .from('reminders')
-          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, tags, checklist, color')
-          .eq('user_id', req.userId)
-          .eq('is_completed', false)
-          .order('due_date', { ascending: true, nullsFirst: false })
+        const rows = await db
+          .select({
+            id: reminders.id,
+            title: reminders.title,
+            description: reminders.description,
+            priority: reminders.priority,
+            due_date: reminders.due_date,
+            status: reminders.status,
+            is_completed: reminders.is_completed,
+            started_at: reminders.started_at,
+            completed_at: reminders.completed_at,
+            linked_event_id: reminders.linked_event_id,
+            tags: reminders.tags,
+            checklist: reminders.checklist,
+            color: reminders.color,
+          })
+          .from(reminders)
+          .where(and(eq(reminders.user_id, req.userId!), eq(reminders.is_completed, false)))
+          .orderBy(sql`${reminders.due_date} asc nulls last`)
           .limit(100);
-        return (reminders || []) as Record<string, unknown>[];
+        return rows as Record<string, unknown>[];
       })(),
     ]);
 
@@ -126,15 +134,8 @@ router.get('/week', async (req: AuthRequest, res: Response) => {
     const [eventsResult, remindersResult] = await Promise.all([
       (async () => {
         try {
-          const { calendar } = await getCalendarClient(req.userId!);
-          const eventsResponse = await calendar.events.list({
-            calendarId: 'primary',
-            timeMin: startOfWeek.toISOString(),
-            timeMax: endOfWeek.toISOString(),
-            singleEvents: true,
-            orderBy: 'startTime',
-          });
-          return (eventsResponse.data.items || []) as Record<string, unknown>[];
+          const items = await listEvents(req.userId!, { timeMin: startOfWeek, timeMax: endOfWeek });
+          return items as unknown as Record<string, unknown>[];
         } catch {
           return [];
         }
@@ -143,14 +144,27 @@ router.get('/week', async (req: AuthRequest, res: Response) => {
         // Same as /today — fetch the full incomplete backlog. due_date filtering
         // here would silently drop NULL-due ToDos and any item due past the week,
         // which is exactly what the user reported as "todo의 일정을 가져오지 못함".
-        const { data: reminders } = await supabaseAdmin
-          .from('reminders')
-          .select('id, title, description, priority, due_date, status, is_completed, started_at, completed_at, linked_event_id, tags, checklist, color')
-          .eq('user_id', req.userId)
-          .eq('is_completed', false)
-          .order('due_date', { ascending: true, nullsFirst: false })
+        const rows = await db
+          .select({
+            id: reminders.id,
+            title: reminders.title,
+            description: reminders.description,
+            priority: reminders.priority,
+            due_date: reminders.due_date,
+            status: reminders.status,
+            is_completed: reminders.is_completed,
+            started_at: reminders.started_at,
+            completed_at: reminders.completed_at,
+            linked_event_id: reminders.linked_event_id,
+            tags: reminders.tags,
+            checklist: reminders.checklist,
+            color: reminders.color,
+          })
+          .from(reminders)
+          .where(and(eq(reminders.user_id, req.userId!), eq(reminders.is_completed, false)))
+          .orderBy(sql`${reminders.due_date} asc nulls last`)
           .limit(100);
-        return (reminders || []) as Record<string, unknown>[];
+        return rows as Record<string, unknown>[];
       })(),
     ]);
 

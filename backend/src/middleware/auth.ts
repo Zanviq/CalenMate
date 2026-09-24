@@ -1,66 +1,59 @@
-import { Request, Response, NextFunction } from 'express';
-import { supabaseAdmin } from '../services/supabase';
+import { Request, Response, NextFunction, CookieOptions } from 'express';
+import jwt from 'jsonwebtoken';
 
 export interface AuthRequest extends Request {
   userId?: string;
 }
 
-// Short-lived cache for token → userId mapping
-// Avoids hitting Supabase auth on every single API request
-interface CachedAuth {
-  userId: string;
-  expiresAt: number;
+export const SESSION_COOKIE = 'calenmate_session';
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET is not set');
+  return secret;
 }
 
-const authCache = new Map<string, CachedAuth>();
-const AUTH_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes (balance between performance and token revocation window)
+export function sessionCookieOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.COOKIE_SECURE === 'true',
+    path: '/',
+    maxAge: SESSION_TTL_SECONDS * 1000,
+  };
+}
 
-// Periodically clean up expired entries to prevent memory leaks
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of authCache) {
-    if (now >= entry.expiresAt) {
-      authCache.delete(key);
-    }
-  }
-}, 60_000).unref();
+export function issueSession(res: Response, userId: string) {
+  const token = jwt.sign({ sub: userId }, getJwtSecret(), { expiresIn: SESSION_TTL_SECONDS });
+  res.cookie(SESSION_COOKIE, token, sessionCookieOptions());
+}
 
-export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
+export function clearSession(res: Response) {
+  const { maxAge: _maxAge, ...opts } = sessionCookieOptions();
+  void _maxAge;
+  res.clearCookie(SESSION_COOKIE, opts);
+}
 
-  if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing authorization token' });
-    return;
-  }
+// Verifies the session cookie (stateless JWT) and sets req.userId.
+// Per-row ownership is enforced in each route by filtering on user_id —
+// see docs/authorization.md for the list of policies this replaces.
+export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const token = (req.cookies as Record<string, string> | undefined)?.[SESSION_COOKIE];
 
-  const token = authHeader.split(' ')[1];
-
-  // Check cache first
-  const cached = authCache.get(token);
-  if (cached && Date.now() < cached.expiresAt) {
-    req.userId = cached.userId;
-    next();
+  if (!token) {
+    res.status(401).json({ error: 'Not authenticated' });
     return;
   }
 
   try {
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-
-    if (error || !user) {
-      authCache.delete(token);
-      res.status(401).json({ error: 'Invalid token' });
-      return;
-    }
-
-    // Cache the result
-    authCache.set(token, {
-      userId: user.id,
-      expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
-    });
-
-    req.userId = user.id;
+    const payload = jwt.verify(token, getJwtSecret());
+    const sub = typeof payload === 'object' ? payload.sub : undefined;
+    if (!sub) throw new Error('Missing subject');
+    req.userId = sub;
     next();
   } catch {
-    res.status(401).json({ error: 'Authentication failed' });
+    clearSession(res);
+    res.status(401).json({ error: 'Invalid session' });
   }
 }

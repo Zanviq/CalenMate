@@ -1,6 +1,8 @@
 import { Router, Response } from 'express';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
-import { supabaseAdmin } from '../services/supabase';
+import { and, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm';
+import { db } from '../db';
+import { reminders, todoTimeLog } from '../db/schema';
 
 const router = Router();
 
@@ -35,34 +37,42 @@ router.get('/timeline', async (req: AuthRequest, res: Response) => {
     const defaultFrom = new Date(today);
     defaultFrom.setDate(defaultFrom.getDate() - 7);
 
-    const fromIso = fromStr ? `${fromStr}T00:00:00.000Z` : defaultFrom.toISOString();
-    const toIso = toStr ? `${toStr}T23:59:59.999Z` : today.toISOString();
+    const fromDate = fromStr ? new Date(`${fromStr}T00:00:00.000Z`) : defaultFrom;
+    const toDate = toStr ? new Date(`${toStr}T23:59:59.999Z`) : today;
 
     // Pull both signals in parallel.
-    const [reminderRes, logRes] = await Promise.all([
-      supabaseAdmin
-        .from('reminders')
-        .select('id, title, color, started_at, completed_at, tags')
-        .eq('user_id', req.userId)
-        .not('started_at', 'is', null)
-        .not('completed_at', 'is', null)
-        .gte('started_at', fromIso)
-        .lte('started_at', toIso),
-      supabaseAdmin
-        .from('todo_time_log')
-        .select('reminder_id, started_at, ended_at')
-        .eq('user_id', req.userId)
-        .not('ended_at', 'is', null)
-        .gte('started_at', fromIso)
-        .lte('started_at', toIso)
-        // Tolerate missing table on databases that haven't migrated yet.
-        .then((r) => r, () => ({ data: [], error: null })),
+    const [reminderRows, logRows] = await Promise.all([
+      db
+        .select({
+          id: reminders.id,
+          title: reminders.title,
+          color: reminders.color,
+          started_at: reminders.started_at,
+          completed_at: reminders.completed_at,
+          tags: reminders.tags,
+        })
+        .from(reminders)
+        .where(and(
+          eq(reminders.user_id, req.userId!),
+          isNotNull(reminders.started_at),
+          isNotNull(reminders.completed_at),
+          gte(reminders.started_at, fromDate),
+          lte(reminders.started_at, toDate),
+        )),
+      db
+        .select({
+          reminder_id: todoTimeLog.reminder_id,
+          started_at: todoTimeLog.started_at,
+          ended_at: todoTimeLog.ended_at,
+        })
+        .from(todoTimeLog)
+        .where(and(
+          eq(todoTimeLog.user_id, req.userId!),
+          isNotNull(todoTimeLog.ended_at),
+          gte(todoTimeLog.started_at, fromDate),
+          lte(todoTimeLog.started_at, toDate),
+        )),
     ]);
-
-    if (reminderRes.error) {
-      res.status(500).json({ error: 'Failed to fetch timeline' });
-      return;
-    }
 
     const buckets = new Map<string, TimelineDay>();
     const ensureBucket = (date: string): TimelineDay => {
@@ -75,7 +85,7 @@ router.get('/timeline', async (req: AuthRequest, res: Response) => {
     };
 
     // Reminder-derived signal: status transition timestamps.
-    for (const row of reminderRes.data ?? []) {
+    for (const row of reminderRows) {
       if (!row.started_at || !row.completed_at) continue;
       const start = new Date(row.started_at);
       const end = new Date(row.completed_at);
@@ -97,16 +107,14 @@ router.get('/timeline', async (req: AuthRequest, res: Response) => {
     // We resolve each log's reminder context via a small lookup so the chart
     // can attribute the time to the right ToDo even when started_at on the
     // reminder itself was never recomputed.
-    const logRows = (logRes as { data?: Array<{ reminder_id: string; started_at: string; ended_at: string | null }> })?.data ?? [];
     if (logRows.length > 0) {
       const reminderIds = [...new Set(logRows.map((l) => l.reminder_id))];
-      const { data: extraReminders } = await supabaseAdmin
-        .from('reminders')
-        .select('id, title, color, tags')
-        .eq('user_id', req.userId)
-        .in('id', reminderIds);
+      const extraReminders = await db
+        .select({ id: reminders.id, title: reminders.title, color: reminders.color, tags: reminders.tags })
+        .from(reminders)
+        .where(and(eq(reminders.user_id, req.userId!), inArray(reminders.id, reminderIds)));
       const lookup = new Map<string, { id: string; title: string; color: string | null; tags: string[] }>();
-      for (const r of extraReminders ?? []) {
+      for (const r of extraReminders) {
         lookup.set(r.id, { id: r.id, title: r.title, color: r.color, tags: (r.tags ?? []) as string[] });
       }
       for (const log of logRows) {

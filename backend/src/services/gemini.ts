@@ -123,7 +123,7 @@ export async function parseUserMessage(opts: ParseOptions): Promise<AIResponse> 
   }
 
   const remindersBlock = existingReminders && existingReminders.length > 0
-    ? `\n== 현재 ToDo (Google Tasks) ==\n${JSON.stringify(existingReminders)}\n`
+    ? `\n== 현재 ToDo ==\n${JSON.stringify(existingReminders)}\n`
     : '\n== 현재 ToDo ==\n없음\n';
 
   const systemPrompt = `You are CalenMate AI assistant. You help users manage their calendar and reminders.
@@ -173,10 +173,10 @@ Respond ONLY with valid JSON:
   - 이모티콘은 일정 제목(title)에 포함하지 마라. 색상 지정용 신호일 뿐이다.
 - For update/delete: data needs id of the target item
 
-#### Reminders (Google Tasks 연동): create_reminder, update_reminder, delete_reminder, complete_reminder
-- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (Google Tasks 목록 ID, 기본값: @default), checklist, tags
-- ToDo는 Google Tasks 목록에 속함. 사용자가 특정 목록을 지정하면 해당 목록의 google_list_id를 list_id에 넣어라.
-- For update/delete/complete: data needs id (Supabase UUID)
+#### Reminders (ToDo): create_reminder, update_reminder, delete_reminder, complete_reminder
+- Required: title. Optional: priority (low/medium/high, default medium), due_date, notify (boolean, default false), list_id (ToDo 목록 ID, 기본값: @default), checklist, tags
+- ToDo는 목록에 속함. 사용자가 특정 목록을 지정하면 해당 ToDo 목록의 list_id를 list_id에 넣어라.
+- For update/delete/complete: data needs id (UUID)
 - checklist는 [{ "id": "랜덤문자열", "text": "...", "done": false, "order": 0 }] 형식의 배열. 사용자가 "체크리스트 추가" 같은 요청을 하면 update_reminder의 checklist 필드에 항목 배열을 넣어라.
 - tags는 ["work", "study"] 같은 짧은 문자열 배열. 사용자가 분류/라벨링을 요청하거나 "이 ToDo work 태그 붙여줘", "운동 태그로 분류" 같은 표현을 쓰면 tags 필드를 사용하라. update_reminder의 tags는 전체 배열을 보내야 하며 (부분 패치 아님) 기존 사용자 태그를 보존하려면 기존 태그를 포함시켜라. 사용자가 따로 지정하지 않으면 tags는 생략하라.
 
@@ -188,7 +188,7 @@ Respond ONLY with valid JSON:
 #### ToDo ↔ 캘린더 이벤트 링크: link_reminder_event
 - 사용자가 "이 ToDo에 시간을 잡아줘", "1시간 블록해줘"처럼 time-blocking을 요청할 때 사용.
 - data 옵션 1 — 새 이벤트 생성: { "id": "<reminder_id>", "date": "YYYY-MM-DD", "start_time": "HH:mm", "end_time": "HH:mm" 또는 "duration_minutes": 60, "auto_complete_on_event_end": true }
-- data 옵션 2 — 기존 이벤트 연결: { "id": "<reminder_id>", "event_id": "<google_event_id>", "auto_complete_on_event_end": true }
+- data 옵션 2 — 기존 이벤트 연결: { "id": "<reminder_id>", "event_id": "<event_id>", "auto_complete_on_event_end": true }
 - 링크된 이벤트가 끝나면 ToDo가 자동 완료된다 (auto_complete_on_event_end=true일 때).
 
 #### 자동 스케줄링 (제안 모드)

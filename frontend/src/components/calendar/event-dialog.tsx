@@ -31,13 +31,13 @@ const EVENT_COLORS = [
   { id: '8', name: '그래파이트', hex: '#616161' },
 ];
 
-const GOOGLE_COLOR_MAP: Record<string, string> = Object.fromEntries(
+const COLOR_ID_MAP: Record<string, string> = Object.fromEntries(
   EVENT_COLORS.map((c) => [c.id, c.hex])
 );
 
 function resolveColor(color?: string): string {
   if (!color) return '#3b82f6';
-  if (GOOGLE_COLOR_MAP[color]) return GOOGLE_COLOR_MAP[color];
+  if (COLOR_ID_MAP[color]) return COLOR_ID_MAP[color];
   if (color.startsWith('#')) return color;
   return '#3b82f6';
 }

@@ -8,7 +8,7 @@ import {
   createTaskList,
   updateTaskList,
   deleteTaskList,
-} from '../services/google-tasks';
+} from '../services/task-lists';
 
 const router = Router();
 
@@ -25,10 +25,6 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     res.json(lists);
   } catch (err) {
     console.error('Failed to fetch task lists:', err);
-    if (err instanceof Error && err.message.includes('insufficient')) {
-      res.status(403).json({ error: 'Google Tasks 권한이 없습니다. 다시 로그인해주세요.' });
-      return;
-    }
     res.status(500).json({ error: 'Failed to fetch task lists' });
   }
 });
@@ -49,6 +45,10 @@ router.patch('/:listId', validateBody(taskListSchema), async (req: AuthRequest, 
   try {
     const listId = req.params.listId as string;
     const list = await updateTaskList(req.userId!, listId, req.body.title);
+    if (!list) {
+      res.status(404).json({ error: 'Task list not found' });
+      return;
+    }
     res.json(list);
   } catch (err) {
     console.error('Failed to update task list:', err);
@@ -56,11 +56,19 @@ router.patch('/:listId', validateBody(taskListSchema), async (req: AuthRequest, 
   }
 });
 
-// DELETE /:listId - Delete task list
+// DELETE /:listId - Delete task list (its ToDos are deleted with it)
 router.delete('/:listId', async (req: AuthRequest, res: Response) => {
   try {
     const listId = req.params.listId as string;
-    await deleteTaskList(req.userId!, listId);
+    const result = await deleteTaskList(req.userId!, listId);
+    if (result === 'not_found') {
+      res.status(404).json({ error: 'Task list not found' });
+      return;
+    }
+    if (result === 'default') {
+      res.status(400).json({ error: '기본 목록은 삭제할 수 없습니다' });
+      return;
+    }
     res.json({ message: 'Task list deleted successfully' });
   } catch (err) {
     console.error('Failed to delete task list:', err);

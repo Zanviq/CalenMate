@@ -1,6 +1,6 @@
 export interface Profile {
   id: string;
-  email: string;
+  username: string;
   display_name: string;
   avatar_url: string | null;
   settings: Record<string, unknown>;
@@ -43,8 +43,7 @@ export interface Reminder {
   notify: boolean;
   notify_at: string | null;
   color: string | null;
-  google_task_id: string | null;
-  google_list_id: string | null;
+  list_id: string;
   created_at: string;
   updated_at: string;
   linked_event?: LinkedEventInfo | null;

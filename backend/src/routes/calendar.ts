@@ -3,7 +3,13 @@ import { z } from 'zod';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
-import { getCalendarClient } from '../services/google-calendar';
+import {
+  listEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  type EventResource,
+} from '../services/events';
 import { invalidateSummaryCache } from './summary';
 
 const router = Router();
@@ -26,45 +32,33 @@ const updateEventSchema = z.object({
   color: z.string().optional(),
 });
 
-interface GoogleCalendarEvent {
-  id?: string | null;
-  summary?: string | null;
-  description?: string | null;
-  colorId?: string | null;
-  start?: { dateTime?: string | null; date?: string | null } | null;
-  end?: { dateTime?: string | null; date?: string | null } | null;
-}
-
-function toCalendarEvent(item: GoogleCalendarEvent) {
-  const allDay = !item.start?.dateTime;
+function toCalendarEvent(item: EventResource) {
+  const allDay = !item.start.dateTime;
   return {
-    id: item.id ?? '',
-    title: item.summary ?? '(제목 없음)',
+    id: item.id,
+    title: item.summary || '(제목 없음)',
     description: item.description ?? undefined,
-    start: item.start?.dateTime ?? item.start?.date ?? '',
-    end: item.end?.dateTime ?? item.end?.date ?? '',
+    start: item.start.dateTime ?? item.start.date ?? '',
+    end: item.end.dateTime ?? item.end.date ?? '',
     color: item.colorId ?? undefined,
     allDay,
   };
 }
 
+function parseQueryDate(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
 // GET /events - List events
 router.get('/events', async (req: AuthRequest, res: Response) => {
   try {
-    const { timeMin, timeMax } = req.query;
-
-    const { calendar } = await getCalendarClient(req.userId!);
-
-    const response = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: timeMin as string,
-      timeMax: timeMax as string,
-      singleEvents: true,
-      orderBy: 'startTime',
+    const items = await listEvents(req.userId!, {
+      timeMin: parseQueryDate(req.query.timeMin),
+      timeMax: parseQueryDate(req.query.timeMax),
     });
-
-    const events = (response.data.items || []).map(toCalendarEvent);
-    res.json(events);
+    res.json(items.map(toCalendarEvent));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch events';
     res.status(500).json({ error: message });
@@ -75,28 +69,10 @@ router.get('/events', async (req: AuthRequest, res: Response) => {
 router.post('/events', validateBody(createEventSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { title, start, end, description, color } = req.body;
-
-    const { calendar } = await getCalendarClient(req.userId!);
-
-    const event = await calendar.events.insert({
-      calendarId: 'primary',
-      requestBody: {
-        summary: title,
-        description,
-        start: {
-          dateTime: start,
-          timeZone: 'Asia/Seoul',
-        },
-        end: {
-          dateTime: end,
-          timeZone: 'Asia/Seoul',
-        },
-        ...(color && { colorId: color }),
-      },
-    });
+    const event = await createEvent(req.userId!, { title, start, end, description, color });
 
     invalidateSummaryCache(req.userId!);
-    res.status(201).json(toCalendarEvent(event.data));
+    res.status(201).json(toCalendarEvent(event));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to create event';
     res.status(500).json({ error: message });
@@ -109,32 +85,16 @@ router.put('/events/:id', validateBody(updateEventSchema), async (req: AuthReque
     const id = req.params.id as string;
     const { title, start, end, description, color } = req.body;
 
-    const { calendar } = await getCalendarClient(req.userId!);
-
-    const response = await calendar.events.patch({
-      calendarId: 'primary',
-      eventId: id,
-      requestBody: {
-        ...(title && { summary: title }),
-        ...(description !== undefined && { description }),
-        ...(start && {
-          start: {
-            dateTime: start,
-            timeZone: 'Asia/Seoul',
-          },
-        }),
-        ...(end && {
-          end: {
-            dateTime: end,
-            timeZone: 'Asia/Seoul',
-          },
-        }),
-        ...(color && { colorId: color }),
-      },
+    const event = await updateEvent(req.userId!, id, {
+      ...(title && { title }),
+      ...(description !== undefined && { description }),
+      ...(start && { start }),
+      ...(end && { end }),
+      ...(color && { color }),
     });
 
     invalidateSummaryCache(req.userId!);
-    res.json(toCalendarEvent(response.data));
+    res.json(toCalendarEvent(event));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update event';
     res.status(500).json({ error: message });
@@ -145,13 +105,11 @@ router.put('/events/:id', validateBody(updateEventSchema), async (req: AuthReque
 router.delete('/events/:id', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-
-    const { calendar } = await getCalendarClient(req.userId!);
-
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId: id,
-    });
+    const deleted = await deleteEvent(req.userId!, id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Event not found' });
+      return;
+    }
 
     invalidateSummaryCache(req.userId!);
     res.json({ message: 'Event deleted successfully' });

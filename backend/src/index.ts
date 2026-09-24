@@ -5,6 +5,7 @@ import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 
 import authRoutes from './routes/auth';
 import calendarRoutes from './routes/calendar';
@@ -17,6 +18,8 @@ import instructionRoutes from './routes/instructions';
 import settingsRoutes from './routes/settings';
 import insightsRoutes from './routes/insights';
 import focusRoutes from './routes/focus';
+import { runMigrations } from './db/migrate';
+import { seedDemoData } from './db/seed';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -28,6 +31,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+app.use(cookieParser());
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -47,8 +51,20 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/insights', insightsRoutes);
 app.use('/api/focus', focusRoutes);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Apply pending migrations (and the demo seed) before accepting requests.
+async function start() {
+  await runMigrations();
+  if (process.env.SEED_DEMO_DATA !== 'false') {
+    await seedDemoData();
+  }
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
 
 export default app;

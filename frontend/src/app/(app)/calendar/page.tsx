@@ -17,8 +17,8 @@ import { Button } from '@/components/ui/button';
 import { EventDialog } from '@/components/calendar/event-dialog';
 import type { CalendarEvent } from '@/types';
 
-// Google Calendar colorId → hex color mapping
-const GOOGLE_COLOR_MAP: Record<string, string> = {
+// Event colorId → hex color mapping
+const COLOR_ID_MAP: Record<string, string> = {
   '1': '#7986cb',  // lavender
   '2': '#33b679',  // sage
   '3': '#8e24aa',  // grape
@@ -34,7 +34,7 @@ const GOOGLE_COLOR_MAP: Record<string, string> = {
 
 function resolveEventColor(color?: string): string {
   if (!color) return '#3b82f6';
-  if (GOOGLE_COLOR_MAP[color]) return GOOGLE_COLOR_MAP[color];
+  if (COLOR_ID_MAP[color]) return COLOR_ID_MAP[color];
   if (color.startsWith('#')) return color;
   return '#3b82f6';
 }

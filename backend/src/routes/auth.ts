@@ -1,174 +1,123 @@
-import { Router, Response } from 'express';
-import { google } from 'googleapis';
-import { AuthRequest } from '../middleware/auth';
-import { authMiddleware } from '../middleware/auth';
-import { supabaseAdmin } from '../services/supabase';
-import { getOAuth2Client, isInvalidGrantError } from '../services/google-auth';
+import { Router, Request, Response } from 'express';
+import { z } from 'zod';
+import bcrypt from 'bcryptjs';
+import { eq, sql } from 'drizzle-orm';
+import { AuthRequest, authMiddleware, issueSession, clearSession } from '../middleware/auth';
+import { validateBody } from '../middleware/validate';
+import { db } from '../db';
+import { users, type UserRow } from '../db/schema';
+import { createDefaultList } from '../services/task-lists';
 
 const router = Router();
 
-router.use(authMiddleware);
+const BCRYPT_ROUNDS = 10;
 
-type ConnectionState =
-  | { connected: true }
-  | { connected: false; reason: 'not_linked' | 'invalid_grant' | 'forbidden' | 'unknown'; message: string };
+const usernameSchema = z
+  .string()
+  .trim()
+  .min(3, '아이디는 3자 이상이어야 합니다')
+  .max(32, '아이디는 32자 이하여야 합니다')
+  .regex(/^[a-zA-Z0-9._-]+$/, '아이디는 영문, 숫자, . _ - 만 사용할 수 있습니다');
 
-// GET /connection-status - Probe Google Calendar + Tasks API reachability for the user
-router.get('/connection-status', async (req: AuthRequest, res: Response) => {
+const registerSchema = z.object({
+  username: usernameSchema,
+  password: z.string().min(8, '비밀번호는 8자 이상이어야 합니다').max(128),
+  display_name: z.string().trim().max(50).optional(),
+});
+
+const loginSchema = z.object({
+  username: z.string().trim().min(1),
+  password: z.string().min(1),
+});
+
+// Never send the password hash to the client.
+export function toPublicUser(user: UserRow) {
+  const { password_hash: _hash, ...rest } = user;
+  void _hash;
+  return rest;
+}
+
+async function findUserByUsername(username: string) {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.username}) = lower(${username})`)
+    .limit(1);
+  return user ?? null;
+}
+
+// POST /register - Create an account and start a session
+router.post('/register', validateBody(registerSchema), async (req: Request, res: Response) => {
   try {
-    let oauth2Client;
-    try {
-      oauth2Client = await getOAuth2Client(req.userId!);
-    } catch {
-      const notLinked: ConnectionState = {
-        connected: false,
-        reason: 'not_linked',
-        message: 'Google 계정이 연결되지 않았습니다.',
-      };
-      res.json({ googleLinked: false, calendar: notLinked, tasks: notLinked });
+    const { username, password, display_name } = req.body as z.infer<typeof registerSchema>;
+
+    if (await findUserByUsername(username)) {
+      res.status(409).json({ error: '이미 사용 중인 아이디입니다' });
       return;
     }
 
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    const tasks = google.tasks({ version: 'v1', auth: oauth2Client });
+    const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    const probe = async (op: () => Promise<unknown>): Promise<ConnectionState> => {
-      try {
-        await op();
-        return { connected: true };
-      } catch (err: unknown) {
-        if (isInvalidGrantError(err)) {
-          return {
-            connected: false,
-            reason: 'invalid_grant',
-            message: 'Google 인증이 만료되었습니다. 다시 로그인해주세요.',
-          };
-        }
-        const e = err as { code?: number | string; message?: string };
-        const code = typeof e.code === 'number' ? e.code : Number(e.code);
-        if (code === 401 || code === 403) {
-          return {
-            connected: false,
-            reason: 'forbidden',
-            message: '권한이 부족합니다. 다시 로그인하여 권한을 부여해주세요.',
-          };
-        }
-        return {
-          connected: false,
-          reason: 'unknown',
-          message: e.message || '연결 확인 중 오류가 발생했습니다.',
-        };
-      }
-    };
-
-    const [calendarStatus, tasksStatus] = await Promise.all([
-      probe(() => calendar.calendarList.list({ maxResults: 1 })),
-      probe(() => tasks.tasklists.list({ maxResults: 1 })),
-    ]);
-
-    res.json({
-      googleLinked: true,
-      calendar: calendarStatus,
-      tasks: tasksStatus,
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(users)
+        .values({ username, password_hash, display_name: display_name || username })
+        .returning();
+      await createDefaultList(created.id, tx);
+      return created;
     });
+
+    issueSession(res, user.id);
+    res.status(201).json(toPublicUser(user));
   } catch (err) {
-    console.error('connection-status failed:', err);
-    res.status(500).json({ error: 'Failed to check connection status' });
+    console.error('register failed:', err);
+    res.status(500).json({ error: 'Failed to register' });
   }
+});
+
+// POST /login - Verify credentials and start a session
+router.post('/login', validateBody(loginSchema), async (req: Request, res: Response) => {
+  try {
+    const { username, password } = req.body as z.infer<typeof loginSchema>;
+    const user = await findUserByUsername(username);
+
+    // Compare even when the user is missing so response time doesn't reveal it.
+    const hash = user?.password_hash ?? '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv';
+    const ok = await bcrypt.compare(password, hash);
+
+    if (!user || !ok) {
+      res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다' });
+      return;
+    }
+
+    issueSession(res, user.id);
+    res.json(toPublicUser(user));
+  } catch (err) {
+    console.error('login failed:', err);
+    res.status(500).json({ error: 'Failed to log in' });
+  }
+});
+
+// POST /logout - Clear the session cookie
+router.post('/logout', (_req: Request, res: Response) => {
+  clearSession(res);
+  res.json({ message: 'Logged out' });
 });
 
 // GET /me - Get current user profile
-router.get('/me', async (req: AuthRequest, res: Response) => {
+router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { data: profile, error } = await supabaseAdmin
-      .from('profiles')
-      .select('*')
-      .eq('id', req.userId)
-      .single();
+    const [user] = await db.select().from(users).where(eq(users.id, req.userId!)).limit(1);
 
-    if (error || !profile) {
-      res.status(404).json({ error: 'Profile not found' });
+    if (!user) {
+      clearSession(res);
+      res.status(401).json({ error: 'User not found' });
       return;
     }
 
-    res.json(profile);
+    res.json(toPublicUser(user));
   } catch {
     res.status(500).json({ error: 'Failed to fetch profile' });
-  }
-});
-
-// POST /google - Save Google tokens
-router.post('/google', async (req: AuthRequest, res: Response) => {
-  try {
-    const { access_token, refresh_token } = req.body;
-
-    if (!access_token) {
-      res.status(400).json({ error: 'access_token is required' });
-      return;
-    }
-
-    const { error } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        google_access_token: access_token,
-        google_refresh_token: refresh_token || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', req.userId);
-
-    if (error) {
-      res.status(500).json({ error: 'Failed to save tokens' });
-      return;
-    }
-
-    res.json({ message: 'Google tokens saved successfully' });
-  } catch {
-    res.status(500).json({ error: 'Failed to save Google tokens' });
-  }
-});
-
-// POST /refresh - Refresh Google access token
-router.post('/refresh', async (req: AuthRequest, res: Response) => {
-  try {
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .select('google_refresh_token')
-      .eq('id', req.userId)
-      .single();
-
-    if (profileError || !profile?.google_refresh_token) {
-      res.status(400).json({ error: 'No refresh token available' });
-      return;
-    }
-
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
-    );
-
-    oauth2Client.setCredentials({
-      refresh_token: profile.google_refresh_token,
-    });
-
-    const { credentials } = await oauth2Client.refreshAccessToken();
-
-    const { error: updateError } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        google_access_token: credentials.access_token,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', req.userId);
-
-    if (updateError) {
-      res.status(500).json({ error: 'Failed to update token' });
-      return;
-    }
-
-    res.json({ access_token: credentials.access_token });
-  } catch {
-    res.status(500).json({ error: 'Failed to refresh token' });
   }
 });
 

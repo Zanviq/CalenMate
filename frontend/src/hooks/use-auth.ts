@@ -4,13 +4,11 @@ import { useEffect } from 'react';
 import { useAuthStore } from '@/store/auth';
 
 export function useAuth() {
-  const { user, session, loading, initialize, signInWithGoogle, signOut } =
-    useAuthStore();
+  const { user, loading, initialize, signIn, signUp, signOut } = useAuthStore();
 
   useEffect(() => {
-    const { unsubscribe } = initialize();
-    return () => unsubscribe();
+    void initialize();
   }, [initialize]);
 
-  return { user, session, loading, signInWithGoogle, signOut };
+  return { user, loading, signIn, signUp, signOut };
 }

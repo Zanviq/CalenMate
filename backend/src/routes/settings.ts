@@ -1,9 +1,11 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
+import { eq } from 'drizzle-orm';
 import { AuthRequest } from '../middleware/auth';
 import { authMiddleware } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
-import { supabaseAdmin } from '../services/supabase';
+import { db } from '../db';
+import { users } from '../db/schema';
 
 const router = Router();
 
@@ -23,22 +25,19 @@ const DEFAULT_SETTINGS = {
   language: 'ko',
 };
 
+async function readSettings(userId: string) {
+  const [user] = await db
+    .select({ settings: users.settings })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return user?.settings ?? {};
+}
+
 // GET / - Get user settings
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const { data: profile, error } = await supabaseAdmin
-      .from('profiles')
-      .select('settings')
-      .eq('id', req.userId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('Settings read failed:', error);
-      res.status(500).json({ error: 'Failed to fetch settings' });
-      return;
-    }
-
-    res.json({ ...DEFAULT_SETTINGS, ...((profile?.settings as Record<string, unknown>) || {}) });
+    res.json({ ...DEFAULT_SETTINGS, ...(await readSettings(req.userId!)) });
   } catch (err) {
     console.error('Settings GET error:', err);
     res.status(500).json({ error: 'Failed to fetch settings' });
@@ -48,35 +47,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 // PATCH / - Update user settings (partial merge)
 router.patch('/', validateBody(settingsSchema), async (req: AuthRequest, res: Response) => {
   try {
-    // Read existing settings (auto-create profile row if missing — first-time settings change)
-    const { data: profile, error: readError } = await supabaseAdmin
-      .from('profiles')
-      .select('settings')
-      .eq('id', req.userId)
-      .maybeSingle();
+    const merged = { ...(await readSettings(req.userId!)), ...req.body };
 
-    if (readError) {
-      console.error('Settings read failed:', readError);
-      res.status(500).json({ error: 'Failed to read settings' });
-      return;
-    }
+    const [updated] = await db
+      .update(users)
+      .set({ settings: merged, updated_at: new Date() })
+      .where(eq(users.id, req.userId!))
+      .returning({ settings: users.settings });
 
-    const merged = { ...(profile?.settings || {}), ...req.body };
-
-    const { data: updated, error: updateError } = await supabaseAdmin
-      .from('profiles')
-      .update({ settings: merged, updated_at: new Date().toISOString() })
-      .eq('id', req.userId)
-      .select('settings')
-      .maybeSingle();
-
-    if (updateError) {
-      console.error('Settings update failed:', updateError);
-      res.status(500).json({ error: 'Failed to update settings' });
-      return;
-    }
-
-    res.json({ ...DEFAULT_SETTINGS, ...((updated?.settings as Record<string, unknown>) || merged) });
+    res.json({ ...DEFAULT_SETTINGS, ...(updated?.settings ?? merged) });
   } catch (err) {
     console.error('Settings PATCH error:', err);
     res.status(500).json({ error: 'Failed to update settings' });

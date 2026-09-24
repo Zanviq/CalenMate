@@ -108,11 +108,7 @@ export default function HomePage() {
 
   const toggleCompleteMutation = useMutation({
     mutationFn: async (reminder: Reminder) => {
-      const res = await api.patch(`/api/reminders/${reminder.id}/complete`, {
-        google_task_id: reminder.google_task_id,
-        google_list_id: reminder.google_list_id,
-        is_completed: reminder.is_completed,
-      });
+      const res = await api.patch(`/api/reminders/${reminder.id}/complete`);
       return res.data as Reminder;
     },
     onMutate: async (reminder) => {

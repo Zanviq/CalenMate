@@ -188,8 +188,6 @@ export default function ReminderDetailPage() {
   const saveMutation = useMutation({
     mutationFn: (data: ReminderForm) => api.put(`/api/reminders/${id}`, {
       ...data,
-      google_task_id: reminder?.google_task_id,
-      google_list_id: reminder?.google_list_id,
     }),
     onSuccess: (res) => {
       // Update cache in-place instead of full refetch
@@ -229,13 +227,11 @@ export default function ReminderDetailPage() {
     staleTime: 60_000,
   });
 
-  // Update tags (sends only the tags field, leaves Google Tasks untouched)
+  // Update tags (sends only the tags field)
   const updateTagsMutation = useMutation({
     mutationFn: async (tags: string[]) => {
       const res = await api.put(`/api/reminders/${id}`, {
         tags,
-        google_task_id: reminder?.google_task_id,
-        google_list_id: reminder?.google_list_id,
       });
       return res.data as Reminder;
     },
@@ -258,13 +254,11 @@ export default function ReminderDetailPage() {
     },
   });
 
-  // Update checklist (sends only the checklist field, leaves Google Tasks untouched)
+  // Update checklist (sends only the checklist field)
   const updateChecklistMutation = useMutation({
     mutationFn: async (checklist: ChecklistItem[]) => {
       const res = await api.put(`/api/reminders/${id}`, {
         checklist,
-        google_task_id: reminder?.google_task_id,
-        google_list_id: reminder?.google_list_id,
       });
       return res.data as Reminder;
     },
@@ -355,12 +349,7 @@ export default function ReminderDetailPage() {
 
   // Delete reminder
   const deleteMutation = useMutation({
-    mutationFn: () => api.delete(`/api/reminders/${id}`, {
-      params: {
-        google_task_id: reminder?.google_task_id,
-        google_list_id: reminder?.google_list_id,
-      },
-    }),
+    mutationFn: () => api.delete(`/api/reminders/${id}`),
     onSuccess: () => {
       // Remove this reminder's cache to prevent 404 refetch
       queryClient.removeQueries({ queryKey: ['reminders', id] });
@@ -438,10 +427,10 @@ export default function ReminderDetailPage() {
         <h1 className="min-w-0 flex-1 truncate text-lg font-bold">
           {reminder.title}
         </h1>
-        {reminder.google_list_id && (
+        {reminder.list_id && (
           <span className="flex items-center gap-1 rounded-md bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800">
             <List className="h-3 w-3" />
-            {taskLists.find((l) => l.id === reminder.google_list_id)?.title || '기본 목록'}
+            {taskLists.find((l) => l.id === reminder.list_id)?.title || '기본 목록'}
           </span>
         )}
         <div className="flex items-center gap-1">

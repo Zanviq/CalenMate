@@ -152,13 +152,11 @@ export default function RemindersPage() {
   });
 
   // Inline checklist toggle from the list expansion. Sends only the new checklist
-  // array — Google Tasks is left untouched (PUT body without title/description/due).
+  // array.
   const updateChecklistMutation = useMutation({
     mutationFn: async ({ reminder, checklist }: { reminder: Reminder; checklist: ChecklistItem[] }) => {
       const res = await api.put(`/api/reminders/${reminder.id}`, {
         checklist,
-        google_task_id: reminder.google_task_id,
-        google_list_id: reminder.google_list_id,
       });
       return res.data as Reminder;
     },
@@ -203,12 +201,7 @@ export default function RemindersPage() {
   };
 
   const deleteMutation = useMutation({
-    mutationFn: (reminder: Reminder) => api.delete(`/api/reminders/${reminder.id}`, {
-      params: {
-        google_task_id: reminder.google_task_id,
-        google_list_id: reminder.google_list_id,
-      },
-    }),
+    mutationFn: (reminder: Reminder) => api.delete(`/api/reminders/${reminder.id}`),
     onMutate: async (reminder) => {
       await queryClient.cancelQueries({ queryKey: ['reminders', filter, selectedListId, tagsKey] });
       const previous = queryClient.getQueryData<Reminder[]>(['reminders', filter, selectedListId, tagsKey]);

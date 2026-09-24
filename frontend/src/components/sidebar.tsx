@@ -106,7 +106,7 @@ export function Sidebar() {
         <DropdownMenuContent side="right" align="end" sideOffset={8} className="w-48">
           <div className="px-2 py-1.5">
             <p className="text-sm font-medium">{user?.display_name ?? 'Guest'}</p>
-            <p className="text-xs text-muted-foreground">{user?.email ?? ''}</p>
+            <p className="text-xs text-muted-foreground">{user?.username ? `@${user.username}` : ''}</p>
           </div>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => router.push('/settings')}>
