@@ -56,6 +56,12 @@ async function generateContentWithRetry(
   parts: Parameters<GenerativeModel['generateContent']>[0],
   opts: { maxAttempts?: number; baseDelayMs?: number } = {},
 ): Promise<Awaited<ReturnType<GenerativeModel['generateContent']>>> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new GeminiUnavailableError(
+      'AI 기능을 사용하려면 .env에 GEMINI_API_KEY를 설정한 뒤 서버를 다시 시작해주세요.',
+      'unknown',
+    );
+  }
   const maxAttempts = opts.maxAttempts ?? 3;
   const baseDelayMs = opts.baseDelayMs ?? 700;
   let lastErr: unknown;
